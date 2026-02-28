@@ -21,6 +21,10 @@ const DAY_CYCLE_SECONDS = 24 * 60;
 const DAY_START_HOUR = 7;
 const HUMIDITY_DIFFUSION_RATE = 0.13;
 const HUMIDITY_DIFFUSION_STEPS = 4;
+const PHOTO_FOV_MIN = 30;
+const PHOTO_FOV_MAX = 78;
+const PHOTO_DOF_MIN = 0;
+const PHOTO_DOF_MAX = 1;
 
 interface ClimateState {
   dayPhase: number;
@@ -75,6 +79,11 @@ let climateState: ClimateState = {
   cloudiness: 0.2,
   rainIntensity: 0
 };
+let photoMode = false;
+let photoFov = 46;
+let photoDof = 0.38;
+let riverGuideVisible = true;
+let interactionModeBeforePhoto: InteractionMode = interactionMode;
 let humidityMap = new Float32Array(world.size * world.size);
 let humidityScratch = new Float32Array(world.size * world.size);
 let humidityStepCounter = 0;
@@ -148,6 +157,10 @@ function buildDebugStatusMessage(enabled: boolean): string {
 
 function saturate(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function smoothstep(edge0: number, edge1: number, value: number): number {
@@ -365,6 +378,11 @@ scene.updateVegetation(
   world.vegetationSeed,
   currentVegetationVitality()
 );
+scene.setPhotoFov(photoFov);
+scene.setPhotoDepthBlur(photoDof);
+scene.setPhotoMode(photoMode);
+scene.updateRiverGuide(world.terrain);
+scene.setRiverGuideVisible(riverGuideVisible);
 
 const hud = new Hud(
   document.body,
@@ -500,6 +518,90 @@ const hud = new Hud(
   }
 );
 
+const photoOverlay = document.createElement('div');
+photoOverlay.className = 'photo-overlay';
+photoOverlay.dataset.testid = 'photo-overlay';
+document.body.appendChild(photoOverlay);
+
+let lastPhotoCaptureLabel = '';
+
+function updatePhotoOverlay(): void {
+  if (!photoMode) {
+    photoOverlay.classList.remove('visible');
+    photoOverlay.textContent = '';
+    return;
+  }
+
+  photoOverlay.classList.add('visible');
+  const lines = [
+    'PHOTO MODE',
+    `[ ] FOV ${photoFov.toFixed(0)}°`,
+    `- / = DOF ${photoDof.toFixed(2)}`,
+    'K capture PNG | P or Esc exit',
+    `R river guide: ${riverGuideVisible ? 'ON' : 'OFF'}`
+  ];
+  if (lastPhotoCaptureLabel) {
+    lines.push(`Saved: ${lastPhotoCaptureLabel}`);
+  }
+  photoOverlay.textContent = lines.join('\n');
+}
+
+function setPhotoModeEnabled(enabled: boolean): void {
+  if (photoMode === enabled) {
+    return;
+  }
+
+  photoMode = enabled;
+  scene.setPhotoMode(enabled);
+  hud.element.classList.toggle('photo-hidden', enabled);
+  if (enabled) {
+    interactionModeBeforePhoto = interactionMode;
+    interactionMode = 'camera';
+    hud.setInteractionMode(interactionMode);
+    hud.setStatus('Photo mode ON');
+  } else {
+    interactionMode = interactionModeBeforePhoto;
+    hud.setInteractionMode(interactionMode);
+    hud.setStatus(
+      interactionMode === 'camera' ? 'Photo mode OFF (camera)' : `Photo mode OFF (${toolMode})`
+    );
+  }
+  updatePhotoOverlay();
+}
+
+function adjustPhotoFov(delta: number): void {
+  photoFov = scene.setPhotoFov(clampRange(photoFov + delta, PHOTO_FOV_MIN, PHOTO_FOV_MAX));
+  updatePhotoOverlay();
+}
+
+function adjustPhotoDof(delta: number): void {
+  photoDof = scene.setPhotoDepthBlur(clampRange(photoDof + delta, PHOTO_DOF_MIN, PHOTO_DOF_MAX));
+  updatePhotoOverlay();
+}
+
+function capturePhoto(): void {
+  const dataUrl = scene.captureScreenshot('image/png');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const link = document.createElement('a');
+  link.href = dataUrl;
+  link.download = `hakoniwa-${stamp}.png`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  lastPhotoCaptureLabel = stamp.slice(0, 19);
+  updatePhotoOverlay();
+  hud.setStatus('Captured PNG');
+}
+
+function toggleRiverGuide(): void {
+  riverGuideVisible = !riverGuideVisible;
+  scene.setRiverGuideVisible(riverGuideVisible);
+  updatePhotoOverlay();
+  hud.setStatus(`River guide ${riverGuideVisible ? 'ON' : 'OFF'}`);
+}
+
+updatePhotoOverlay();
+
 const input = new InputController({
   domElement: scene.renderer.domElement,
   camera: scene.camera,
@@ -510,6 +612,7 @@ const input = new InputController({
     hoveredCell = { x, y };
   },
   getInteractionMode: () => interactionMode,
+  getPhotoMode: () => photoMode,
   onPaint: (x, y, isInitialStroke, _shiftKey) => {
     void _shiftKey;
     if (toolMode === 'waterSource') {
@@ -540,6 +643,21 @@ const input = new InputController({
     const next = !debugMode;
     setDebugMode(next);
     hud.setStatus(buildDebugStatusMessage(next));
+  },
+  onPhotoModeToggleKey: () => {
+    setPhotoModeEnabled(!photoMode);
+  },
+  onRiverGuideToggleKey: () => {
+    toggleRiverGuide();
+  },
+  onPhotoFovDeltaKey: (delta) => {
+    adjustPhotoFov(delta);
+  },
+  onPhotoDofDeltaKey: (delta) => {
+    adjustPhotoDof(delta);
+  },
+  onPhotoCaptureKey: () => {
+    capturePhoto();
   },
   onRadiusDelta: (delta) => {
     brush.radius = Math.min(40, Math.max(1, brush.radius + delta));
@@ -621,6 +739,7 @@ function animate(frameTime: number): void {
 
   if (terrainDirty) {
     scene.updateTerrain(world.terrain);
+    scene.updateRiverGuide(world.terrain);
     terrainDirty = false;
   }
 

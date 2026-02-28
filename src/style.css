@@ -53,6 +53,10 @@ canvas {
   animation: panel-enter 420ms ease-out;
 }
 
+.hud.photo-hidden {
+  display: none;
+}
+
 .hud h1 {
   margin: 0;
   font-size: 1.26rem;
@@ -252,6 +256,29 @@ canvas {
 }
 
 .hud-debug.visible {
+  display: block;
+}
+
+.photo-overlay {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: none;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(129, 164, 178, 0.55);
+  background: rgba(14, 20, 24, 0.52);
+  color: rgba(226, 244, 255, 0.95);
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
+.photo-overlay.visible {
   display: block;
 }
 

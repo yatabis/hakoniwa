@@ -417,8 +417,8 @@ export class Hud {
     this.cameraButton.classList.toggle('active', mode === 'camera');
     this.tip.textContent =
       mode === 'camera'
-        ? 'Camera mode: left drag pan | right drag rotate | wheel zoom | 1-4 edit tools | D debug'
-        : 'Edit mode: left drag edit | right drag rotate | 0 camera mode | D debug';
+        ? 'Camera mode: left drag pan | right drag rotate | wheel zoom | P photo | R river guide | D debug'
+        : 'Edit mode: left drag edit | right drag rotate | 0 camera mode | P photo | R river guide | D debug';
     this.updateContextualControlVisibility();
   }
 

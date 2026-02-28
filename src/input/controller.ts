@@ -17,10 +17,16 @@ export interface InputControllerOptions {
   worldSize: number;
   onHover: (x: number, y: number) => void;
   getInteractionMode: () => InteractionMode;
+  getPhotoMode: () => boolean;
   onPaint: (x: number, y: number, isInitialStroke: boolean, shiftKey: boolean) => void;
   onToolKey: (tool: ToolMode) => void;
   onInteractionModeKey: (mode: InteractionMode) => void;
   onDebugModeToggleKey: () => void;
+  onPhotoModeToggleKey: () => void;
+  onRiverGuideToggleKey: () => void;
+  onPhotoFovDeltaKey: (delta: number) => void;
+  onPhotoDofDeltaKey: (delta: number) => void;
+  onPhotoCaptureKey: () => void;
   onRadiusDelta: (delta: number) => void;
 }
 
@@ -32,6 +38,7 @@ export class InputController {
   private readonly worldSize: number;
   private readonly onHover: (x: number, y: number) => void;
   private readonly getInteractionMode: () => InteractionMode;
+  private readonly getPhotoMode: () => boolean;
   private readonly onPaint: (
     x: number,
     y: number,
@@ -41,6 +48,11 @@ export class InputController {
   private readonly onToolKey: (tool: ToolMode) => void;
   private readonly onInteractionModeKey: (mode: InteractionMode) => void;
   private readonly onDebugModeToggleKey: () => void;
+  private readonly onPhotoModeToggleKey: () => void;
+  private readonly onRiverGuideToggleKey: () => void;
+  private readonly onPhotoFovDeltaKey: (delta: number) => void;
+  private readonly onPhotoDofDeltaKey: (delta: number) => void;
+  private readonly onPhotoCaptureKey: () => void;
   private readonly onRadiusDelta: (delta: number) => void;
 
   private readonly raycaster = new THREE.Raycaster();
@@ -62,10 +74,16 @@ export class InputController {
     this.worldSize = options.worldSize;
     this.onHover = options.onHover;
     this.getInteractionMode = options.getInteractionMode;
+    this.getPhotoMode = options.getPhotoMode;
     this.onPaint = options.onPaint;
     this.onToolKey = options.onToolKey;
     this.onInteractionModeKey = options.onInteractionModeKey;
     this.onDebugModeToggleKey = options.onDebugModeToggleKey;
+    this.onPhotoModeToggleKey = options.onPhotoModeToggleKey;
+    this.onRiverGuideToggleKey = options.onRiverGuideToggleKey;
+    this.onPhotoFovDeltaKey = options.onPhotoFovDeltaKey;
+    this.onPhotoDofDeltaKey = options.onPhotoDofDeltaKey;
+    this.onPhotoCaptureKey = options.onPhotoCaptureKey;
     this.onRadiusDelta = options.onRadiusDelta;
 
     this.onPointerDownBound = this.onPointerDown.bind(this);
@@ -142,6 +160,47 @@ export class InputController {
       target instanceof HTMLTextAreaElement ||
       target instanceof HTMLSelectElement
     ) {
+      return;
+    }
+
+    // Preserve browser/system shortcuts like Ctrl+R / Cmd+R.
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+
+    if (event.key === 'p' || event.key === 'P') {
+      this.onPhotoModeToggleKey();
+      event.preventDefault();
+      return;
+    }
+
+    if (event.key === 'r' || event.key === 'R') {
+      this.onRiverGuideToggleKey();
+      event.preventDefault();
+      return;
+    }
+
+    const inPhotoMode = this.getPhotoMode();
+    if (inPhotoMode) {
+      if (event.key === 'Escape') {
+        this.onPhotoModeToggleKey();
+        event.preventDefault();
+      } else if (event.key === '[') {
+        this.onPhotoFovDeltaKey(-1);
+        event.preventDefault();
+      } else if (event.key === ']') {
+        this.onPhotoFovDeltaKey(1);
+        event.preventDefault();
+      } else if (event.key === '-' || event.key === '_') {
+        this.onPhotoDofDeltaKey(-0.05);
+        event.preventDefault();
+      } else if (event.key === '=' || event.key === '+') {
+        this.onPhotoDofDeltaKey(0.05);
+        event.preventDefault();
+      } else if (event.key === 'k' || event.key === 'K') {
+        this.onPhotoCaptureKey();
+        event.preventDefault();
+      }
       return;
     }
 

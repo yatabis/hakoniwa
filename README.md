@@ -27,6 +27,12 @@ Implemented:
 - Climate system
   - simulated day-night cycle (24-minute full cycle, starts at 07:00)
   - cloud/rain simulation
+- Photo mode
+  - HUD hide for scenic viewing
+  - FOV and DOF-style post effect controls
+  - PNG screenshot capture
+- River guide overlay
+  - terrain-derived downhill flow path hints
 - Debug overrides
   - day cycle override (simulation/manual hour)
   - weather override (simulation/manual cloud/rain)
@@ -117,7 +123,16 @@ Optional override:
 - `4`: Water Source tool
 - `0`: Camera mode
 - `[` / `]`: Brush radius down/up
+- `P`: Toggle photo mode
+- `R`: Toggle river guide overlay
 - `D`: Toggle debug mode
+
+Photo mode shortcuts:
+
+- `[` / `]`: FOV down/up
+- `-` / `=`: DOF strength down/up
+- `K`: Capture PNG screenshot
+- `Esc` or `P`: Exit photo mode
 
 ### Mouse
 
@@ -140,6 +155,8 @@ Main panel includes:
 - Brush controls (contextual): Radius, Strength, Flatten target, Source rate
 - Save/Load buttons for slots 1..3
 - Status line
+- Photo mode (HUD hidden for scenic view, with subtle DOF post effect and screenshot capture)
+- River guide overlay toggle (terrain-derived flow path candidates)
 
 Debug-only panels:
 

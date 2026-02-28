@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { toIndex } from '../core/grid';
 
 const MAX_VEGETATION = 20_000;
@@ -12,6 +16,10 @@ const FOG_DAY = new THREE.Color('#cfd7cb');
 const FOG_NIGHT = new THREE.Color('#2f3f4a');
 const FOG_STORM = new THREE.Color('#7d8f90');
 const HEMI_GROUND_DAY = new THREE.Color('#57685f');
+const PHOTO_FOV_MIN = 30;
+const PHOTO_FOV_MAX = 78;
+const PHOTO_DOF_MIN = 0;
+const PHOTO_DOF_MAX = 1;
 
 function hash2D(x: number, y: number, seed: number): number {
   const value = Math.sin((x + seed * 0.001) * 12.9898 + (y - seed * 0.001) * 78.233) * 43758.5453;
@@ -226,14 +234,25 @@ export class SceneView {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   readonly controls: OrbitControls;
+  readonly composer: EffectComposer;
 
   private readonly container: HTMLElement;
   private readonly size: number;
+  private readonly renderPass: RenderPass;
+  private readonly bokehPass: BokehPass;
+  private readonly outputPass: OutputPass;
   private readonly terrainGeometry: THREE.BufferGeometry;
   private readonly waterGeometry: THREE.BufferGeometry;
   private readonly terrainMesh: THREE.Mesh;
   private readonly waterMesh: THREE.Mesh;
   private readonly waterMaterial: THREE.ShaderMaterial;
+  private readonly riverGuideGeometry: THREE.BufferGeometry;
+  private readonly riverGuideMesh: THREE.LineSegments;
+  private readonly maxRiverGuideSegments: number;
+  private readonly riverGuidePositions: Float32Array;
+  private readonly riverGuideColors: Float32Array;
+  private readonly riverGuidePositionAttr: THREE.BufferAttribute;
+  private readonly riverGuideColorAttr: THREE.BufferAttribute;
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly sunLight: THREE.DirectionalLight;
   private readonly vegetationMesh: THREE.InstancedMesh;
@@ -272,6 +291,19 @@ export class SceneView {
       300
     );
     this.camera.position.set(34, 32, 40);
+
+    this.composer = new EffectComposer(this.renderer);
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
+    this.bokehPass = new BokehPass(this.scene, this.camera, {
+      focus: 30,
+      aperture: 0.00008,
+      maxblur: 0.0035
+    });
+    this.bokehPass.enabled = false;
+    this.composer.addPass(this.bokehPass);
+    this.outputPass = new OutputPass();
+    this.composer.addPass(this.outputPass);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -318,6 +350,30 @@ export class SceneView {
     this.waterMesh.renderOrder = 2;
     this.scene.add(this.waterMesh);
 
+    this.riverGuideGeometry = new THREE.BufferGeometry();
+    this.maxRiverGuideSegments = Math.ceil(((size - 2) * (size - 2)) / 2);
+    const riverGuideFloatSize = this.maxRiverGuideSegments * 6;
+    this.riverGuidePositions = new Float32Array(riverGuideFloatSize);
+    this.riverGuideColors = new Float32Array(riverGuideFloatSize);
+    this.riverGuidePositionAttr = new THREE.BufferAttribute(this.riverGuidePositions, 3);
+    this.riverGuideColorAttr = new THREE.BufferAttribute(this.riverGuideColors, 3);
+    this.riverGuidePositionAttr.setUsage(THREE.DynamicDrawUsage);
+    this.riverGuideColorAttr.setUsage(THREE.DynamicDrawUsage);
+    this.riverGuideGeometry.setAttribute('position', this.riverGuidePositionAttr);
+    this.riverGuideGeometry.setAttribute('color', this.riverGuideColorAttr);
+    this.riverGuideGeometry.setDrawRange(0, 0);
+    const riverGuideMaterial = new THREE.LineBasicMaterial({
+      color: '#8bd4eb',
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+      vertexColors: true
+    });
+    this.riverGuideMesh = new THREE.LineSegments(this.riverGuideGeometry, riverGuideMaterial);
+    this.riverGuideMesh.renderOrder = 4;
+    this.riverGuideMesh.frustumCulled = false;
+    this.scene.add(this.riverGuideMesh);
+
     const treeGeometry = new THREE.ConeGeometry(0.35, 1.8, 6);
     const treeMaterial = new THREE.MeshStandardMaterial({
       color: '#4f7b4e',
@@ -336,6 +392,123 @@ export class SceneView {
 
   getTerrainMesh(): THREE.Mesh {
     return this.terrainMesh;
+  }
+
+  setPhotoMode(enabled: boolean): void {
+    this.bokehPass.enabled = enabled;
+  }
+
+  setPhotoFov(value: number): number {
+    const fov = THREE.MathUtils.clamp(value, PHOTO_FOV_MIN, PHOTO_FOV_MAX);
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+    return fov;
+  }
+
+  setPhotoDepthBlur(value: number): number {
+    const dof = THREE.MathUtils.clamp(value, PHOTO_DOF_MIN, PHOTO_DOF_MAX);
+    const uniforms = this.bokehPass.uniforms as Record<string, { value: number }>;
+    uniforms.focus.value = THREE.MathUtils.lerp(18, 70, 1 - dof);
+    uniforms.aperture.value = THREE.MathUtils.lerp(0.00001, 0.00016, dof);
+    uniforms.maxblur.value = THREE.MathUtils.lerp(0.0012, 0.008, dof);
+    return dof;
+  }
+
+  captureScreenshot(type = 'image/png', quality?: number): string {
+    this.render();
+    return this.renderer.domElement.toDataURL(type, quality);
+  }
+
+  setRiverGuideVisible(visible: boolean): void {
+    this.riverGuideMesh.visible = visible;
+  }
+
+  updateRiverGuide(terrain: Float32Array): void {
+    const half = (this.size - 1) * 0.5;
+    let segmentCount = 0;
+
+    for (let y = 1; y < this.size - 1; y += 1) {
+      for (let x = 1; x < this.size - 1; x += 1) {
+        if ((x + y) % 2 !== 0) {
+          continue;
+        }
+
+        const index = toIndex(this.size, x, y);
+        const current = terrain[index];
+        const right = terrain[toIndex(this.size, x + 1, y)];
+        const left = terrain[toIndex(this.size, x - 1, y)];
+        const up = terrain[toIndex(this.size, x, y + 1)];
+        const down = terrain[toIndex(this.size, x, y - 1)];
+
+        let targetX = x;
+        let targetY = y;
+        let targetHeight = current;
+
+        if (right < targetHeight) {
+          targetX = x + 1;
+          targetY = y;
+          targetHeight = right;
+        }
+        if (left < targetHeight) {
+          targetX = x - 1;
+          targetY = y;
+          targetHeight = left;
+        }
+        if (up < targetHeight) {
+          targetX = x;
+          targetY = y + 1;
+          targetHeight = up;
+        }
+        if (down < targetHeight) {
+          targetX = x;
+          targetY = y - 1;
+          targetHeight = down;
+        }
+
+        const downhill = current - targetHeight;
+        if (downhill < 0.1 || current < -8) {
+          continue;
+        }
+
+        const strength = THREE.MathUtils.clamp((downhill - 0.1) / 1.4, 0, 1);
+        const startX = x - half;
+        const startY = current + 0.15;
+        const startZ = y - half;
+        const dirX = targetX - x;
+        const dirZ = targetY - y;
+        const endX = startX + dirX * 0.46;
+        const endZ = startZ + dirZ * 0.46;
+        const endY = targetHeight + 0.12;
+
+        if (segmentCount >= this.maxRiverGuideSegments) {
+          continue;
+        }
+
+        const writeOffset = segmentCount * 6;
+        this.riverGuidePositions[writeOffset] = startX;
+        this.riverGuidePositions[writeOffset + 1] = startY;
+        this.riverGuidePositions[writeOffset + 2] = startZ;
+        this.riverGuidePositions[writeOffset + 3] = endX;
+        this.riverGuidePositions[writeOffset + 4] = endY;
+        this.riverGuidePositions[writeOffset + 5] = endZ;
+
+        const hueShift = THREE.MathUtils.lerp(0.34, 0.52, strength);
+        const red = 0.42 + hueShift * 0.2;
+        const green = 0.64 + strength * 0.28;
+        const blue = 0.65 + strength * 0.26;
+        this.riverGuideColors[writeOffset] = red;
+        this.riverGuideColors[writeOffset + 1] = green;
+        this.riverGuideColors[writeOffset + 2] = blue;
+        this.riverGuideColors[writeOffset + 3] = red;
+        this.riverGuideColors[writeOffset + 4] = green;
+        this.riverGuideColors[writeOffset + 5] = blue;
+        segmentCount += 1;
+      }
+    }
+
+    this.riverGuideGeometry.setDrawRange(0, segmentCount * 2);
+    this.riverGuidePositionAttr.needsUpdate = true;
+    this.riverGuideColorAttr.needsUpdate = true;
   }
 
   updateTerrain(terrain: Float32Array): void {
@@ -555,7 +728,9 @@ export class SceneView {
 
   render(): void {
     this.waterMaterial.uniforms.uTime.value = performance.now() * 0.001;
-    this.renderer.render(this.scene, this.camera);
+    // Keep the same color pipeline in normal/photo modes.
+    // Photo mode only toggles the Bokeh pass.
+    this.composer.render();
   }
 
   dispose(): void {
@@ -563,6 +738,7 @@ export class SceneView {
     this.controls.dispose();
     this.terrainGeometry.dispose();
     this.waterGeometry.dispose();
+    this.riverGuideGeometry.dispose();
     this.vegetationMesh.geometry.dispose();
 
     const terrainMaterial = this.terrainMesh.material;
@@ -583,6 +759,15 @@ export class SceneView {
       waterMaterial.dispose();
     }
 
+    const riverGuideMaterial = this.riverGuideMesh.material;
+    if (Array.isArray(riverGuideMaterial)) {
+      for (const material of riverGuideMaterial) {
+        material.dispose();
+      }
+    } else {
+      riverGuideMaterial.dispose();
+    }
+
     const vegetationMaterial = this.vegetationMesh.material;
     if (Array.isArray(vegetationMaterial)) {
       for (const material of vegetationMaterial) {
@@ -593,6 +778,7 @@ export class SceneView {
     }
 
     this.renderer.dispose();
+    this.composer.dispose();
   }
 
   private onResize(): void {
@@ -601,5 +787,6 @@ export class SceneView {
     this.camera.aspect = width / Math.max(height, 1);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.composer.setSize(width, height);
   }
 }
