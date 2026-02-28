@@ -142,10 +142,10 @@ function createWaterMaterial(): THREE.ShaderMaterial {
     depthWrite: true,
     vertexShader: `
       attribute vec2 flow;
-      attribute vec2 waterData;
+      attribute vec3 waterData;
       varying vec2 vUv;
       varying vec2 vFlow;
-      varying vec2 vWaterData;
+      varying vec3 vWaterData;
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
 
@@ -170,7 +170,7 @@ function createWaterMaterial(): THREE.ShaderMaterial {
       uniform vec3 uFoamColor;
       varying vec2 vUv;
       varying vec2 vFlow;
-      varying vec2 vWaterData;
+      varying vec3 vWaterData;
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
 
@@ -188,10 +188,11 @@ function createWaterMaterial(): THREE.ShaderMaterial {
       void main() {
         float depth = clamp(vWaterData.x, 0.0, 1.0);
         float flowStrength = clamp(vWaterData.y, 0.0, 1.0);
+        float rapidness = clamp(vWaterData.z, 0.0, 1.0);
         float storminess = clamp(uCloudiness * 0.65 + uRainIntensity * 0.8, 0.0, 1.0);
 
         vec2 flowDir = length(vFlow) > 0.0001 ? normalize(vFlow) : vec2(0.0);
-        float speed = mix(0.08, 0.85, flowStrength) * (1.0 + uRainIntensity * 0.45);
+        float speed = mix(0.08, 0.85, flowStrength) * (1.0 + uRainIntensity * 0.45 + rapidness * 0.28);
         vec2 baseUv = vUv * mix(15.0, 22.0, storminess);
 
         vec2 uvA = baseUv + flowDir * (uTime * speed) + vec2(uTime * 0.02, -uTime * 0.015);
@@ -200,10 +201,13 @@ function createWaterMaterial(): THREE.ShaderMaterial {
         float ripA = ripplePattern(uvA);
         float ripB = ripplePattern(uvB + ripA * 0.45);
         float ripple = mix(ripA, ripB, 0.5);
+        float rapidPulse = ripplePattern(baseUv * 2.35 + vec2(uTime * 1.35, -uTime * 1.1));
 
         float foam = smoothstep(0.42, 1.0, flowStrength) * (0.28 + ripple * 0.72);
+        float rapidFoam = smoothstep(0.1, 1.0, rapidness) * (0.36 + rapidPulse * 0.64);
+        foam = max(foam, rapidFoam);
         foam *= (1.0 + uRainIntensity * 0.65);
-        float turbidity = clamp((1.0 - depth) * 0.6 + flowStrength * 0.55 + storminess * 0.35, 0.0, 1.0);
+        float turbidity = clamp((1.0 - depth) * 0.6 + flowStrength * 0.55 + storminess * 0.35 + rapidness * 0.3, 0.0, 1.0);
 
         vec3 normalDir = normalize(vWorldNormal);
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
@@ -211,14 +215,16 @@ function createWaterMaterial(): THREE.ShaderMaterial {
 
         vec3 baseColor = mix(uShallowColor, uDeepColor, depth);
         baseColor = mix(baseColor, vec3(0.53, 0.62, 0.58), turbidity * 0.22);
+        baseColor = mix(baseColor, vec3(0.74, 0.82, 0.85), rapidness * 0.14);
         baseColor *= mix(0.5, 1.05, uDaylight);
         vec3 color = baseColor;
         color += vec3(ripple * (0.06 + flowStrength * 0.09));
-        color += uFoamColor * foam * (0.22 + flowStrength * 0.38);
+        color += uFoamColor * foam * (0.22 + flowStrength * 0.38 + rapidness * 0.3);
+        color += vec3(rapidPulse * rapidness * 0.07);
         color += vec3(fresnel * (0.08 + uDaylight * 0.08));
         color = mix(color, color * vec3(0.92, 0.95, 1.03), storminess * 0.25);
 
-        float alpha = clamp(depth * 0.64 + flowStrength * 0.3 + fresnel * 0.1 + storminess * 0.08, 0.0, 0.9);
+        float alpha = clamp(depth * 0.64 + flowStrength * 0.3 + rapidness * 0.1 + fresnel * 0.1 + storminess * 0.08, 0.0, 0.9);
         if (alpha < 0.03) {
           discard;
         }
@@ -342,7 +348,7 @@ export class SceneView {
     );
     this.waterGeometry.setAttribute(
       'waterData',
-      new THREE.BufferAttribute(new Float32Array(vertexCount * 2), 2)
+      new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3)
     );
     this.waterMaterial = createWaterMaterial();
     this.waterMesh = new THREE.Mesh(this.waterGeometry, this.waterMaterial);
@@ -551,15 +557,17 @@ export class SceneView {
       const y = (index - x) / this.size;
       const level = water[index];
       const visible = level > visibleThreshold;
-      const statOffset = index * 2;
+      const flowOffset = index * 2;
+      const statOffset = index * 3;
       if (visible) {
         hasVisibleWater = true;
       } else {
         positions[index * 3 + 1] = terrain[index] - drySink;
-        flows[statOffset] = 0;
-        flows[statOffset + 1] = 0;
+        flows[flowOffset] = 0;
+        flows[flowOffset + 1] = 0;
         waterStats[statOffset] = 0;
         waterStats[statOffset + 1] = 0;
+        waterStats[statOffset + 2] = 0;
         continue;
       }
 
@@ -569,13 +577,25 @@ export class SceneView {
       const upTotal =
         y + 1 < this.size ? terrain[index + this.size] + water[index + this.size] : total;
       const downTotal = y - 1 >= 0 ? terrain[index - this.size] + water[index - this.size] : total;
+      const lowestNeighborTotal = Math.min(rightTotal, leftTotal, upTotal, downTotal);
 
       const gradientX = rightTotal - leftTotal;
       const gradientY = upTotal - downTotal;
       let flowX = -gradientX;
       let flowY = -gradientY;
       const flowLength = Math.hypot(flowX, flowY);
-      const flowStrength = THREE.MathUtils.clamp(flowLength * 0.35 + level * 1.45, 0, 1);
+      const gradientStrength = THREE.MathUtils.clamp(flowLength * 0.55, 0, 1);
+      const flowStrength = THREE.MathUtils.clamp(gradientStrength * 0.82 + level * 0.75, 0, 1);
+      const localDrop = Math.max(0, total - lowestNeighborTotal);
+      const rawRapidness =
+        THREE.MathUtils.clamp(
+          (localDrop - 0.035) * 2.4 +
+            gradientStrength * 0.9 +
+            Math.max(0, flowStrength - 0.55) * 0.25,
+          0,
+          1
+        ) * THREE.MathUtils.clamp(level * 2.6, 0, 1);
+      const rapidness = Math.pow(rawRapidness, 1.65);
       if (flowLength > 0.00001) {
         flowX /= flowLength;
         flowY /= flowLength;
@@ -585,10 +605,11 @@ export class SceneView {
       }
 
       positions[index * 3 + 1] = terrain[index] + 0.02 + level * 0.78;
-      flows[statOffset] = flowX * flowStrength;
-      flows[statOffset + 1] = flowY * flowStrength;
+      flows[flowOffset] = flowX * flowStrength;
+      flows[flowOffset + 1] = flowY * flowStrength;
       waterStats[statOffset] = THREE.MathUtils.clamp(level * 2.8, 0, 1);
       waterStats[statOffset + 1] = flowStrength;
+      waterStats[statOffset + 2] = rapidness;
     }
 
     position.needsUpdate = true;
