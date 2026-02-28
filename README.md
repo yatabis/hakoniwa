@@ -8,6 +8,10 @@ A browser-based sandbox prototype focused on three core loops:
 
 This project uses **Web + Three.js + TypeScript** and targets desktop browsers.
 
+## Live Demo
+
+- Production: `https://yatabis.github.io/hakoniwa/`
+
 ## Current MVP Scope
 
 Implemented:
@@ -84,6 +88,13 @@ One-time setup on GitHub:
 2. Go to **Pages**.
 3. Set **Source** to **GitHub Actions**.
 4. Push to `main` (or run the workflow manually).
+
+Manual optional E2E run:
+
+1. Open **Actions** > **Deploy to GitHub Pages**.
+2. Click **Run workflow**.
+3. Enable `run_e2e`.
+4. Run it manually to execute Playwright E2E in CI.
 
 How base path is handled:
 
