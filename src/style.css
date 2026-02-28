@@ -135,7 +135,8 @@ canvas {
 
 .debug-seed,
 .debug-daycycle,
-.debug-weather {
+.debug-weather,
+.debug-wind {
   display: none;
   margin-bottom: 10px;
   padding: 8px;
@@ -146,7 +147,8 @@ canvas {
 
 .debug-seed.visible,
 .debug-daycycle.visible,
-.debug-weather.visible {
+.debug-weather.visible,
+.debug-wind.visible {
   display: block;
 }
 

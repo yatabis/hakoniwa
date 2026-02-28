@@ -14,7 +14,7 @@ import type { InteractionMode } from './input/controller';
 import { loadWorldFromSlot, saveWorldToSlot } from './persistence/storage';
 import { SceneView } from './render/scene';
 import { Hud } from './ui/hud';
-import type { DayCycleMode, WeatherMode } from './ui/hud';
+import type { DayCycleMode, WeatherMode, WindMode } from './ui/hud';
 
 const TAU = Math.PI * 2;
 const DAY_CYCLE_SECONDS = 24 * 60;
@@ -31,11 +31,20 @@ interface ClimateState {
   daylight: number;
   cloudiness: number;
   rainIntensity: number;
+  windStrength: number;
+  windDirection: number;
+  windGustiness: number;
 }
 
 interface WeatherOverride {
   cloudiness: number;
   rainIntensity: number;
+}
+
+interface WindOverride {
+  strength: number;
+  direction: number;
+  gustiness: number;
 }
 
 type VegetationKind = 'canopy' | 'shrub' | 'grass';
@@ -52,6 +61,16 @@ interface VegetationCellDiagnostics {
   shrubSuitability: number;
   grassSuitability: number;
   selected: VegetationKind | 'none';
+}
+
+type HakoniwaDebugApi = {
+  getWindDiagnostics: () => ReturnType<SceneView['getWindDiagnostics']>;
+};
+
+declare global {
+  interface Window {
+    __hakoniwaDebug?: HakoniwaDebugApi;
+  }
 }
 
 const app = document.querySelector<HTMLDivElement>('#app');
@@ -84,6 +103,10 @@ let manualDayHour = DAY_START_HOUR;
 let weatherMode: WeatherMode = 'simulation';
 let manualCloudiness = 0.35;
 let manualRainIntensity = 0.08;
+let windMode: WindMode = 'simulation';
+let manualWindStrength = 0.42;
+let manualWindDirection = 200;
+let manualWindGustiness = 0.36;
 let sourceRate = 1.2;
 let sourceIdCounter = world.sources.length + 1;
 let terrainSeed = world.terrainSeed;
@@ -93,7 +116,10 @@ let climateState: ClimateState = {
   dayPhase: 0,
   daylight: 1,
   cloudiness: 0.2,
-  rainIntensity: 0
+  rainIntensity: 0,
+  windStrength: manualWindStrength,
+  windDirection: (manualWindDirection / 180) * Math.PI,
+  windGustiness: manualWindGustiness
 };
 let photoMode = false;
 let photoFov = 46;
@@ -267,6 +293,22 @@ function wrapHour(value: number): number {
   return wrapped < 0 ? wrapped + 24 : wrapped;
 }
 
+function wrapRadians(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  const wrapped = value % TAU;
+  return wrapped < 0 ? wrapped + TAU : wrapped;
+}
+
+function toRadians(degrees: number): number {
+  return wrapRadians((degrees / 180) * Math.PI);
+}
+
+function toDegrees(radians: number): number {
+  return (wrapRadians(radians) / Math.PI) * 180;
+}
+
 function getSimulatedDayPhase(time: number): number {
   const phase = time / DAY_CYCLE_SECONDS + DAY_START_HOUR / 24;
   return phase - Math.floor(phase);
@@ -301,15 +343,28 @@ function getWeatherOverride(): WeatherOverride | null {
   return null;
 }
 
+function getWindOverride(): WindOverride | null {
+  if (debugMode && windMode === 'manual') {
+    return {
+      strength: saturate(manualWindStrength),
+      direction: toRadians(manualWindDirection),
+      gustiness: saturate(manualWindGustiness)
+    };
+  }
+
+  return null;
+}
+
 function buildDebugStatusMessage(enabled: boolean): string {
   const dayLabel = dayCycleMode === 'manual' ? 'manual' : 'simulation';
   const weatherLabel = weatherMode === 'manual' ? 'manual' : 'simulation';
+  const windLabel = windMode === 'manual' ? 'manual' : 'simulation';
 
   if (!enabled) {
-    return 'Debug mode off | Day cycle simulation | Weather simulation';
+    return 'Debug mode off | Day cycle simulation | Weather simulation | Wind simulation';
   }
 
-  return `Debug mode on | Day cycle ${dayLabel} | Weather ${weatherLabel}`;
+  return `Debug mode on | Day cycle ${dayLabel} | Weather ${weatherLabel} | Wind ${windLabel}`;
 }
 
 function saturate(value: number): number {
@@ -333,7 +388,8 @@ function createClimateState(
   time: number,
   seed: number,
   dayPhase: number,
-  weatherOverride: WeatherOverride | null
+  weatherOverride: WeatherOverride | null,
+  windOverride: WindOverride | null
 ): ClimateState {
   const wrappedDayPhase = dayPhase - Math.floor(dayPhase);
   const sunWave = Math.sin((wrappedDayPhase - 0.25) * TAU);
@@ -352,11 +408,32 @@ function createClimateState(
     rainIntensity = saturate(weatherOverride.rainIntensity);
   }
 
+  const windSignalA = Math.sin(time * 0.0095 + seed * 0.00031) * 0.5 + 0.5;
+  const windSignalB = Math.sin(time * 0.017 + seed * 0.00073 + cloudiness * 1.4) * 0.5 + 0.5;
+  const windSignalC = Math.sin(time * 0.004 + seed * 0.0011) * 0.5 + 0.5;
+  let windStrength = saturate(0.18 + windSignalA * 0.46 + rainIntensity * 0.24);
+  let windGustiness = saturate(0.15 + windSignalB * 0.54 + rainIntensity * 0.2);
+  let windDirection = wrapRadians(
+    seed * 0.000045 +
+      time * (0.015 + windStrength * 0.008) +
+      (windSignalC - 0.5) * 1.4 +
+      (windSignalB - 0.5) * 0.55
+  );
+
+  if (windOverride) {
+    windStrength = saturate(windOverride.strength);
+    windDirection = wrapRadians(windOverride.direction);
+    windGustiness = saturate(windOverride.gustiness);
+  }
+
   return {
     dayPhase: wrappedDayPhase,
     daylight,
     cloudiness,
-    rainIntensity
+    rainIntensity,
+    windStrength,
+    windDirection,
+    windGustiness
   };
 }
 
@@ -451,6 +528,10 @@ function setDebugMode(enabled: boolean): void {
     weatherMode = 'simulation';
     hud.setWeatherMode(weatherMode);
   }
+  if (!enabled && windMode !== 'simulation') {
+    windMode = 'simulation';
+    hud.setWindMode(windMode);
+  }
   if (!enabled) {
     previousDebugReadout = '';
     hud.setDebugReadout('');
@@ -492,6 +573,7 @@ function updateDebugReadout(): void {
     debugMode && dayCycleMode === 'manual' ? wrapHour(manualDayHour) : simulatedHour;
   const cycleLabel = debugMode && dayCycleMode === 'manual' ? 'manual' : 'simulation';
   const weatherLabel = debugMode && weatherMode === 'manual' ? 'manual' : 'simulation';
+  const windLabel = debugMode && windMode === 'manual' ? 'manual' : 'simulation';
   const vegetationVitality = currentVegetationVitality();
   const vegetationCell = sampleVegetationCellDiagnostics(
     world,
@@ -516,7 +598,8 @@ function updateDebugReadout(): void {
     `vegetation cell ${vegetationCell.status} selected=${vegetationCell.selected} fertility=${vegetationCell.fertility.toFixed(3)} moisture=${vegetationCell.moisture.toFixed(3)} riparian=${vegetationCell.riparian.toFixed(3)} slope=${vegetationCell.slope.toFixed(3)}`,
     `vegetation suit canopy=${vegetationCell.canopySuitability.toFixed(3)} shrub=${vegetationCell.shrubSuitability.toFixed(3)} grass=${vegetationCell.grassSuitability.toFixed(3)} density=${vegetationCell.densityNoise.toFixed(3)}/${vegetationCell.densityLimit.toFixed(3)}`,
     `clock mode=${cycleLabel} active=${formatClockHour(activeHour)} sim=${formatClockHour(simulatedHour)} phase=${climateState.dayPhase.toFixed(3)}`,
-    `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)} daylight=${climateState.daylight.toFixed(2)}`
+    `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)} daylight=${climateState.daylight.toFixed(2)}`,
+    `wind mode=${windLabel} strength=${climateState.windStrength.toFixed(2)} dir=${toDegrees(climateState.windDirection).toFixed(0)}deg gust=${climateState.windGustiness.toFixed(2)}`
   ];
 
   const text = lines.join('\n');
@@ -531,13 +614,20 @@ climateState = createClimateState(
   world.time,
   terrainSeed,
   getActiveDayPhase(),
-  getWeatherOverride()
+  getWeatherOverride(),
+  getWindOverride()
 );
 manualCloudiness = climateState.cloudiness;
 manualRainIntensity = climateState.rainIntensity;
+manualWindStrength = climateState.windStrength;
+manualWindDirection = toDegrees(climateState.windDirection);
+manualWindGustiness = climateState.windGustiness;
 seedHumidityFromWorld(humidityMap, world);
 
 const scene = new SceneView(app, world.size);
+window.__hakoniwaDebug = {
+  getWindDiagnostics: () => scene.getWindDiagnostics()
+};
 scene.updateAtmosphere(climateState);
 scene.updateTerrain(world.terrain);
 scene.updateWater(world.terrain, world.water);
@@ -565,6 +655,10 @@ const hud = new Hud(
     weatherMode,
     manualCloudiness,
     manualRainIntensity,
+    windMode,
+    manualWindStrength,
+    manualWindDirection,
+    manualWindGustiness,
     terrainSeed,
     radius: brush.radius,
     strength: brush.strength,
@@ -631,6 +725,44 @@ const hud = new Hud(
         );
       }
     },
+    onWindModeChange: (mode) => {
+      windMode = mode;
+      hud.setWindMode(mode);
+      if (mode === 'manual') {
+        hud.setStatus(
+          `Wind manual: strength ${manualWindStrength.toFixed(2)} dir ${manualWindDirection.toFixed(0)}deg gust ${manualWindGustiness.toFixed(2)}`
+        );
+      } else {
+        hud.setStatus('Wind: simulation');
+      }
+    },
+    onManualWindStrengthChange: (value) => {
+      manualWindStrength = saturate(value);
+      hud.setManualWindStrength(manualWindStrength);
+      if (debugMode && windMode === 'manual') {
+        hud.setStatus(
+          `Wind manual: strength ${manualWindStrength.toFixed(2)} dir ${manualWindDirection.toFixed(0)}deg gust ${manualWindGustiness.toFixed(2)}`
+        );
+      }
+    },
+    onManualWindDirectionChange: (value) => {
+      manualWindDirection = ((value % 360) + 360) % 360;
+      hud.setManualWindDirection(manualWindDirection);
+      if (debugMode && windMode === 'manual') {
+        hud.setStatus(
+          `Wind manual: strength ${manualWindStrength.toFixed(2)} dir ${manualWindDirection.toFixed(0)}deg gust ${manualWindGustiness.toFixed(2)}`
+        );
+      }
+    },
+    onManualWindGustinessChange: (value) => {
+      manualWindGustiness = saturate(value);
+      hud.setManualWindGustiness(manualWindGustiness);
+      if (debugMode && windMode === 'manual') {
+        hud.setStatus(
+          `Wind manual: strength ${manualWindStrength.toFixed(2)} dir ${manualWindDirection.toFixed(0)}deg gust ${manualWindGustiness.toFixed(2)}`
+        );
+      }
+    },
     onRadiusChange: (radius) => {
       brush.radius = radius;
     },
@@ -672,7 +804,8 @@ const hud = new Hud(
           world.time,
           terrainSeed,
           getActiveDayPhase(),
-          getWeatherOverride()
+          getWeatherOverride(),
+          getWindOverride()
         );
         seedHumidityFromWorld(humidityMap, world);
         humidityScratch.fill(0);
@@ -889,7 +1022,8 @@ function animate(frameTime: number): void {
       world.time,
       terrainSeed,
       getActiveDayPhase(),
-      getWeatherOverride()
+      getWeatherOverride(),
+      getWindOverride()
     );
     applyRainfall(world, climateState.rainIntensity, simParams.dt);
     stepWater(world, simParams);
@@ -904,7 +1038,8 @@ function animate(frameTime: number): void {
     world.time,
     terrainSeed,
     getActiveDayPhase(),
-    getWeatherOverride()
+    getWeatherOverride(),
+    getWindOverride()
   );
 
   if (terrainDirty) {
@@ -942,6 +1077,7 @@ function animate(frameTime: number): void {
 requestAnimationFrame(animate);
 
 window.addEventListener('beforeunload', () => {
+  delete window.__hakoniwaDebug;
   input.dispose();
   scene.dispose();
 });

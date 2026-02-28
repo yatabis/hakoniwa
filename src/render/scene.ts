@@ -6,15 +6,17 @@ import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { toIndex } from '../core/grid';
 
-const MAX_CANOPY_VEGETATION = 9_000;
-const MAX_SHRUB_VEGETATION = 11_000;
-const MAX_GRASS_VEGETATION = 14_000;
+const MAX_CANOPY_TREES = 6_800;
+const MAX_SHRUBS = 9_600;
+const MAX_GRASS_PATCHES = 14_000;
 const TAU = Math.PI * 2;
 const SKY_DAY = new THREE.Color('#bccbc4');
+const SKY_DAWN = new THREE.Color('#c6aa8d');
 const SKY_DUSK = new THREE.Color('#c59d7f');
 const SKY_NIGHT = new THREE.Color('#2f4353');
 const SKY_STORM = new THREE.Color('#7e8f91');
 const FOG_DAY = new THREE.Color('#d4ddd2');
+const FOG_DAWN = new THREE.Color('#ccbba2');
 const FOG_NIGHT = new THREE.Color('#3b4e59');
 const FOG_STORM = new THREE.Color('#8b9b97');
 const HEMI_GROUND_DAY = new THREE.Color('#5f725f');
@@ -26,6 +28,7 @@ const RAIN_PARTICLE_COUNT = 2_400;
 const RAIN_AREA_RADIUS = 82;
 const RAIN_TOP_OFFSET = 54;
 const RAIN_BOTTOM_OFFSET = -14;
+const WATER_RAIN_SPLASH_SCALE = 0.33;
 
 type VegetationMaterialLook = {
   toneDark: string;
@@ -52,9 +55,47 @@ type WindVegetationMaterial = THREE.MeshStandardMaterial & {
   };
 };
 
+type WindDiagnostics = {
+  atmosphereWindStrength: number;
+  atmosphereWindDirection: number;
+  atmosphereWindGustiness: number;
+  appliedUniformStrength: number;
+  appliedUniformSpeed: number;
+  appliedUniformGustiness: number;
+  rainVisible: boolean;
+  rainDriftX: number;
+  rainDriftZ: number;
+};
+
 function hash2D(x: number, y: number, seed: number): number {
   const value = Math.sin((x + seed * 0.001) * 12.9898 + (y - seed * 0.001) * 78.233) * 43758.5453;
   return value - Math.floor(value);
+}
+
+function phaseWeight(phase: number, center: number, width: number): number {
+  const wrapped = phase - Math.floor(phase);
+  const distance = Math.abs(((wrapped - center + 0.5) % 1) - 0.5);
+  const normalized = THREE.MathUtils.clamp(1 - distance / Math.max(width, 0.0001), 0, 1);
+  return normalized * normalized;
+}
+
+function setWeightedColor(
+  target: THREE.Color,
+  a: THREE.Color,
+  wa: number,
+  b: THREE.Color,
+  wb: number,
+  c: THREE.Color,
+  wc: number,
+  d: THREE.Color,
+  wd: number
+): THREE.Color {
+  target.setRGB(
+    a.r * wa + b.r * wb + c.r * wc + d.r * wd,
+    a.g * wa + b.g * wb + c.g * wc + d.g * wd,
+    a.b * wa + b.b * wb + c.b * wc + d.b * wd
+  );
+  return target;
 }
 
 function createGridGeometry(size: number, withColors = false): THREE.BufferGeometry {
@@ -190,24 +231,43 @@ function createWindVegetationMaterial(
     shader.uniforms.uWindStrength = { value: material.userData.windStrength };
     shader.uniforms.uWindSpeed = { value: material.userData.windSpeed };
     shader.uniforms.uWindBend = { value: material.userData.windBend };
+    shader.uniforms.uWindDirection = { value: new THREE.Vector2(1, 0) };
+    shader.uniforms.uWindGustiness = { value: 0.35 };
     shader.vertexShader = `
       uniform float uWindTime;
       uniform float uWindStrength;
       uniform float uWindSpeed;
       uniform float uWindBend;
+      uniform vec2 uWindDirection;
+      uniform float uWindGustiness;
     ${shader.vertexShader}
     `;
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `
       #include <begin_vertex>
-      float windHeight = clamp(position.y * 0.72, 0.0, 1.0);
+      float windHeight = smoothstep(-0.35, 0.95, position.y);
+      float windFlex = windHeight * windHeight;
       float windPhase = instanceMatrix[3].x * 0.23 + instanceMatrix[3].z * 0.19;
-      float gustA = sin(windPhase + uWindTime * uWindSpeed);
-      float gustB = cos(windPhase * 1.37 - uWindTime * (uWindSpeed * 0.61));
-      float sway = (gustA * 0.72 + gustB * 0.28) * windHeight * uWindStrength;
-      transformed.x += sway * uWindBend;
-      transformed.z += sway * (uWindBend * 0.62);
+      float swayA = sin(windPhase + uWindTime * uWindSpeed);
+      float swayB = sin(windPhase * 1.61 - uWindTime * (uWindSpeed * 0.74));
+      float swayC = cos(windPhase * 2.07 + uWindTime * (uWindSpeed * 1.36));
+      float gustPulse = sin(windPhase * 2.11 + uWindTime * (uWindSpeed * 1.9));
+      float gustScale = mix(0.84, 1.34, gustPulse * 0.5 + 0.5);
+      float primarySwing = (swayA * 0.62 + swayB * 0.38) * windFlex * uWindStrength;
+      float secondarySwing = swayC * windFlex * uWindStrength * 0.64;
+      float leafFlutter = sin((windPhase + position.y * 3.2) * 2.4 + uWindTime * (uWindSpeed * 2.8));
+      float flutterSwing = leafFlutter * windHeight * uWindStrength * 0.22;
+      float dirLength = max(length(uWindDirection), 0.0001);
+      vec2 windDir = uWindDirection / dirLength;
+      vec2 crossDir = vec2(-windDir.y, windDir.x);
+      float gustMix = mix(1.0, gustScale, uWindGustiness);
+      float alongSwing = (primarySwing * 1.28 + flutterSwing) * gustMix;
+      float crossSwing = secondarySwing * mix(0.68, 1.14, uWindGustiness);
+      vec2 windOffset = windDir * alongSwing + crossDir * crossSwing;
+      transformed.x += windOffset.x * (uWindBend * 2.35);
+      transformed.z += windOffset.y * (uWindBend * 2.16);
+      transformed.y -= (abs(alongSwing) + abs(crossSwing)) * uWindBend * 0.15 * windFlex;
       `
     );
     material.userData.shader = shader;
@@ -222,6 +282,7 @@ function createWaterMaterial(): THREE.ShaderMaterial {
     uDaylight: { value: 1 },
     uCloudiness: { value: 0 },
     uRainIntensity: { value: 0 },
+    uRainSplashScale: { value: WATER_RAIN_SPLASH_SCALE },
     uDeepColor: { value: new THREE.Color('#3f7896') },
     uShallowColor: { value: new THREE.Color('#82b7cf') },
     uFoamColor: { value: new THREE.Color('#d9eef8') }
@@ -256,6 +317,7 @@ function createWaterMaterial(): THREE.ShaderMaterial {
       uniform float uDaylight;
       uniform float uCloudiness;
       uniform float uRainIntensity;
+      uniform float uRainSplashScale;
       uniform vec3 uDeepColor;
       uniform vec3 uShallowColor;
       uniform vec3 uFoamColor;
@@ -276,6 +338,18 @@ function createWaterMaterial(): THREE.ShaderMaterial {
         return (waveA * 0.5 + waveB * 0.5) * 0.25 + 0.5 + (grain - 0.5) * 0.18;
       }
 
+      float rainSplashLayer(vec2 p, float time, float cellScale, float speedScale) {
+        vec2 scaled = p * cellScale;
+        vec2 cell = floor(scaled);
+        vec2 local = fract(scaled) - 0.5;
+        float cellSeed = hash(cell + vec2(19.3, 43.7));
+        float cycle = fract(time * speedScale + cellSeed * 7.13);
+        float radius = cycle * 0.44;
+        float ring = smoothstep(0.055, 0.0, abs(length(local) - radius));
+        float pulse = (1.0 - cycle) * (0.55 + cellSeed * 0.45);
+        return ring * pulse;
+      }
+
       void main() {
         float depth = clamp(vWaterData.x, 0.0, 1.0);
         float flowStrength = clamp(vWaterData.y, 0.0, 1.0);
@@ -293,6 +367,10 @@ function createWaterMaterial(): THREE.ShaderMaterial {
         float ripB = ripplePattern(uvB + ripA * 0.45);
         float ripple = mix(ripA, ripB, 0.5);
         float rapidPulse = ripplePattern(baseUv * 2.35 + vec2(uTime * 1.35, -uTime * 1.1));
+        float rainMask = smoothstep(0.12, 1.0, uRainIntensity);
+        float rainSplashA = rainSplashLayer(vWorldPos.xz + vec2(uTime * 0.23, -uTime * 0.29), uTime, 0.9, 1.2);
+        float rainSplashB = rainSplashLayer(vWorldPos.xz + vec2(-uTime * 0.18, uTime * 0.15), uTime * 0.93, 1.45, 0.9);
+        float rainSplash = (rainSplashA + rainSplashB) * rainMask * uRainSplashScale;
 
         float foam = smoothstep(0.42, 1.0, flowStrength) * (0.28 + ripple * 0.72);
         float rapidFoam = smoothstep(0.1, 1.0, rapidness) * (0.36 + rapidPulse * 0.64);
@@ -312,10 +390,11 @@ function createWaterMaterial(): THREE.ShaderMaterial {
         color += vec3(ripple * (0.06 + flowStrength * 0.09));
         color += uFoamColor * foam * (0.22 + flowStrength * 0.38 + rapidness * 0.3);
         color += vec3(rapidPulse * rapidness * 0.07);
+        color += uFoamColor * (rainSplash * (0.24 + (1.0 - depth) * 0.32));
         color += vec3(fresnel * (0.08 + uDaylight * 0.08));
         color = mix(color, color * vec3(0.92, 0.95, 1.03), storminess * 0.25);
 
-        float alpha = clamp(depth * 0.64 + flowStrength * 0.3 + rapidness * 0.1 + fresnel * 0.1 + storminess * 0.08, 0.0, 0.9);
+        float alpha = clamp(depth * 0.64 + flowStrength * 0.3 + rapidness * 0.1 + fresnel * 0.1 + storminess * 0.08 + rainSplash * 0.08, 0.0, 0.9);
         if (alpha < 0.03) {
           discard;
         }
@@ -362,13 +441,22 @@ export class SceneView {
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly sunLight: THREE.DirectionalLight;
   private readonly moonLight: THREE.DirectionalLight;
-  private readonly canopyMesh: THREE.InstancedMesh;
-  private readonly shrubMesh: THREE.InstancedMesh;
+  private readonly canopyConiferLeafMesh: THREE.InstancedMesh;
+  private readonly canopyBroadleafLeafMesh: THREE.InstancedMesh;
+  private readonly canopyTrunkMesh: THREE.InstancedMesh;
+  private readonly shrubRoundLeafMesh: THREE.InstancedMesh;
+  private readonly shrubTuftLeafMesh: THREE.InstancedMesh;
+  private readonly shrubTrunkMesh: THREE.InstancedMesh;
   private readonly grassMesh: THREE.InstancedMesh;
-  private readonly canopyMaterial: WindVegetationMaterial;
-  private readonly shrubMaterial: WindVegetationMaterial;
+  private readonly canopyConiferMaterial: WindVegetationMaterial;
+  private readonly canopyBroadleafMaterial: WindVegetationMaterial;
+  private readonly canopyTrunkMaterial: THREE.MeshStandardMaterial;
+  private readonly shrubRoundMaterial: WindVegetationMaterial;
+  private readonly shrubTuftMaterial: WindVegetationMaterial;
+  private readonly shrubTrunkMaterial: THREE.MeshStandardMaterial;
   private readonly grassMaterial: WindVegetationMaterial;
-  private readonly vegetationMaterials: WindVegetationMaterial[];
+  private readonly windVegetationMaterials: WindVegetationMaterial[];
+  private readonly staticVegetationMaterials: THREE.MeshStandardMaterial[];
   private readonly vegetationDummy: THREE.Object3D;
   private readonly vegetationColor: THREE.Color;
   private readonly tempColorA: THREE.Color;
@@ -376,6 +464,10 @@ export class SceneView {
   private readonly tempColorC: THREE.Color;
   private vegetationCounts: VegetationRenderCounts;
   private atmosphereRainIntensity: number;
+  private atmosphereWindStrength: number;
+  private atmosphereWindDirection: number;
+  private atmosphereWindGustiness: number;
+  private readonly windDirectionVector: THREE.Vector2;
   private previousFrameTime: number;
   private readonly onResizeBound: () => void;
 
@@ -389,6 +481,10 @@ export class SceneView {
     this.tempColorC = new THREE.Color();
     this.vegetationCounts = { canopy: 0, shrub: 0, grass: 0, total: 0 };
     this.atmosphereRainIntensity = 0;
+    this.atmosphereWindStrength = 0.35;
+    this.atmosphereWindDirection = 0;
+    this.atmosphereWindGustiness = 0.3;
+    this.windDirectionVector = new THREE.Vector2(1, 0);
     this.previousFrameTime = performance.now() * 0.001;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -527,68 +623,138 @@ export class SceneView {
     this.rainMesh.visible = false;
     this.scene.add(this.rainMesh);
 
-    const canopyGeometry = new THREE.ConeGeometry(0.46, 1.58, 7);
-    const shrubGeometry = new THREE.ConeGeometry(0.62, 0.86, 8);
+    const canopyConiferGeometry = new THREE.ConeGeometry(0.48, 1.85, 7);
+    const canopyBroadleafGeometry = new THREE.IcosahedronGeometry(0.86, 0);
+    const canopyTrunkGeometry = new THREE.CylinderGeometry(0.07, 0.11, 1.14, 6);
+    const shrubRoundGeometry = new THREE.IcosahedronGeometry(0.48, 0);
+    const shrubTuftGeometry = new THREE.ConeGeometry(0.5, 0.84, 7);
+    const shrubTrunkGeometry = new THREE.CylinderGeometry(0.05, 0.08, 0.46, 6);
     const grassGeometry = new THREE.ConeGeometry(0.2, 0.55, 4);
 
-    this.canopyMaterial = createWindVegetationMaterial('#486f46', 0.84, 0.04, 0.42, 1.06, 0.14, {
-      toneDark: '#3f5f34',
-      toneLight: '#88ad6a',
-      emissive: 0.26
+    this.canopyConiferMaterial = createWindVegetationMaterial(
+      '#477347',
+      0.82,
+      0.03,
+      0.46,
+      0.88,
+      0.22,
+      {
+        toneDark: '#355f37',
+        toneLight: '#80b06e',
+        emissive: 0.22
+      }
+    );
+    this.canopyBroadleafMaterial = createWindVegetationMaterial(
+      '#4f7b4d',
+      0.8,
+      0.03,
+      0.54,
+      1.05,
+      0.26,
+      {
+        toneDark: '#40603e',
+        toneLight: '#8dbd76',
+        emissive: 0.24
+      }
+    );
+    this.canopyTrunkMaterial = new THREE.MeshStandardMaterial({
+      color: '#644f3b',
+      roughness: 0.95,
+      metalness: 0.01,
+      flatShading: true,
+      vertexColors: true
     });
-    this.shrubMaterial = createWindVegetationMaterial('#6f8556', 0.89, 0.03, 0.34, 1.2, 0.1, {
-      toneDark: '#48693c',
-      toneLight: '#99b675',
-      emissive: 0.22
+    this.shrubRoundMaterial = createWindVegetationMaterial(
+      '#63834d',
+      0.87,
+      0.02,
+      0.42,
+      1.18,
+      0.18,
+      {
+        toneDark: '#4e703f',
+        toneLight: '#9cbf75',
+        emissive: 0.2
+      }
+    );
+    this.shrubTuftMaterial = createWindVegetationMaterial('#5f7f4d', 0.88, 0.02, 0.39, 1.34, 0.17, {
+      toneDark: '#4a6a3b',
+      toneLight: '#90b26e',
+      emissive: 0.19
     });
-    this.grassMaterial = createWindVegetationMaterial('#7c9357', 0.93, 0.02, 0.28, 1.42, 0.08, {
+    this.shrubTrunkMaterial = new THREE.MeshStandardMaterial({
+      color: '#5f4733',
+      roughness: 0.94,
+      metalness: 0.01,
+      flatShading: true,
+      vertexColors: true
+    });
+    this.grassMaterial = createWindVegetationMaterial('#7c9357', 0.93, 0.02, 0.5, 1.42, 0.18, {
       toneDark: '#5c7f44',
       toneLight: '#a8be7d',
-      emissive: 0.18
+      emissive: 0.16
     });
-    this.vegetationMaterials = [this.canopyMaterial, this.shrubMaterial, this.grassMaterial];
+    this.windVegetationMaterials = [
+      this.canopyConiferMaterial,
+      this.canopyBroadleafMaterial,
+      this.shrubRoundMaterial,
+      this.shrubTuftMaterial,
+      this.grassMaterial
+    ];
+    this.staticVegetationMaterials = [this.canopyTrunkMaterial, this.shrubTrunkMaterial];
 
-    this.canopyMesh = new THREE.InstancedMesh(
-      canopyGeometry,
-      this.canopyMaterial,
-      MAX_CANOPY_VEGETATION
-    );
-    this.canopyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.canopyMesh.instanceColor = new THREE.InstancedBufferAttribute(
-      new Float32Array(MAX_CANOPY_VEGETATION * 3),
-      3
-    );
-    this.canopyMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    this.canopyMesh.count = 0;
-    this.scene.add(this.canopyMesh);
+    const setupInstancedMesh = (mesh: THREE.InstancedMesh, maxCount: number): void => {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(maxCount * 3), 3);
+      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      mesh.count = 0;
+      this.scene.add(mesh);
+    };
 
-    this.shrubMesh = new THREE.InstancedMesh(
-      shrubGeometry,
-      this.shrubMaterial,
-      MAX_SHRUB_VEGETATION
+    this.canopyConiferLeafMesh = new THREE.InstancedMesh(
+      canopyConiferGeometry,
+      this.canopyConiferMaterial,
+      MAX_CANOPY_TREES
     );
-    this.shrubMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.shrubMesh.instanceColor = new THREE.InstancedBufferAttribute(
-      new Float32Array(MAX_SHRUB_VEGETATION * 3),
-      3
-    );
-    this.shrubMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    this.shrubMesh.count = 0;
-    this.scene.add(this.shrubMesh);
+    setupInstancedMesh(this.canopyConiferLeafMesh, MAX_CANOPY_TREES);
 
-    this.grassMesh = new THREE.InstancedMesh(
-      grassGeometry,
-      this.grassMaterial,
-      MAX_GRASS_VEGETATION
+    this.canopyBroadleafLeafMesh = new THREE.InstancedMesh(
+      canopyBroadleafGeometry,
+      this.canopyBroadleafMaterial,
+      MAX_CANOPY_TREES
     );
-    this.grassMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.grassMesh.instanceColor = new THREE.InstancedBufferAttribute(
-      new Float32Array(MAX_GRASS_VEGETATION * 3),
-      3
+    setupInstancedMesh(this.canopyBroadleafLeafMesh, MAX_CANOPY_TREES);
+
+    this.canopyTrunkMesh = new THREE.InstancedMesh(
+      canopyTrunkGeometry,
+      this.canopyTrunkMaterial,
+      MAX_CANOPY_TREES
     );
-    this.grassMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    this.grassMesh.count = 0;
-    this.scene.add(this.grassMesh);
+    setupInstancedMesh(this.canopyTrunkMesh, MAX_CANOPY_TREES);
+
+    this.shrubRoundLeafMesh = new THREE.InstancedMesh(
+      shrubRoundGeometry,
+      this.shrubRoundMaterial,
+      MAX_SHRUBS
+    );
+    setupInstancedMesh(this.shrubRoundLeafMesh, MAX_SHRUBS);
+
+    this.shrubTuftLeafMesh = new THREE.InstancedMesh(
+      shrubTuftGeometry,
+      this.shrubTuftMaterial,
+      MAX_SHRUBS
+    );
+    setupInstancedMesh(this.shrubTuftLeafMesh, MAX_SHRUBS);
+
+    this.shrubTrunkMesh = new THREE.InstancedMesh(
+      shrubTrunkGeometry,
+      this.shrubTrunkMaterial,
+      MAX_SHRUBS
+    );
+    setupInstancedMesh(this.shrubTrunkMesh, MAX_SHRUBS);
+
+    this.grassMesh = new THREE.InstancedMesh(grassGeometry, this.grassMaterial, MAX_GRASS_PATCHES);
+    setupInstancedMesh(this.grassMesh, MAX_GRASS_PATCHES);
 
     this.onResizeBound = this.onResize.bind(this);
     window.addEventListener('resize', this.onResizeBound);
@@ -600,6 +766,45 @@ export class SceneView {
 
   getVegetationCounts(): VegetationRenderCounts {
     return { ...this.vegetationCounts };
+  }
+
+  getWindDiagnostics(): WindDiagnostics {
+    let appliedUniformStrength = 0;
+    let appliedUniformSpeed = 0;
+    let appliedUniformGustiness = 0;
+
+    for (const material of this.windVegetationMaterials) {
+      const shader = material.userData.shader;
+      if (!shader) {
+        continue;
+      }
+
+      const strengthUniform = shader.uniforms.uWindStrength as THREE.IUniform<number> | undefined;
+      const speedUniform = shader.uniforms.uWindSpeed as THREE.IUniform<number> | undefined;
+      const gustUniform = shader.uniforms.uWindGustiness as THREE.IUniform<number> | undefined;
+
+      appliedUniformStrength = strengthUniform?.value ?? 0;
+      appliedUniformSpeed = speedUniform?.value ?? 0;
+      appliedUniformGustiness = gustUniform?.value ?? 0;
+      break;
+    }
+
+    const rainDriftX =
+      this.rainPositions.length >= 6 ? this.rainPositions[3] - this.rainPositions[0] : 0;
+    const rainDriftZ =
+      this.rainPositions.length >= 6 ? this.rainPositions[5] - this.rainPositions[2] : 0;
+
+    return {
+      atmosphereWindStrength: this.atmosphereWindStrength,
+      atmosphereWindDirection: this.atmosphereWindDirection,
+      atmosphereWindGustiness: this.atmosphereWindGustiness,
+      appliedUniformStrength,
+      appliedUniformSpeed,
+      appliedUniformGustiness,
+      rainVisible: this.rainMesh.visible,
+      rainDriftX,
+      rainDriftZ
+    };
   }
 
   setPhotoMode(enabled: boolean): void {
@@ -830,7 +1035,13 @@ export class SceneView {
   ): void {
     const half = (this.size - 1) * 0.5;
     let canopyCount = 0;
+    let canopyConiferCount = 0;
+    let canopyBroadleafCount = 0;
+    let canopyTrunkCount = 0;
     let shrubCount = 0;
+    let shrubRoundCount = 0;
+    let shrubTuftCount = 0;
+    let shrubTrunkCount = 0;
     let grassCount = 0;
     const clampedVitality = THREE.MathUtils.clamp(vitality, 0, 1);
 
@@ -933,18 +1144,18 @@ export class SceneView {
           selected = 'grass';
         }
 
-        if (selected === 'canopy' && canopyCount >= MAX_CANOPY_VEGETATION) {
+        if (selected === 'canopy' && canopyCount >= MAX_CANOPY_TREES) {
           selected = shrubWeight >= grassWeight ? 'shrub' : 'grass';
-        } else if (selected === 'shrub' && shrubCount >= MAX_SHRUB_VEGETATION) {
+        } else if (selected === 'shrub' && shrubCount >= MAX_SHRUBS) {
           selected = tallWeight >= grassWeight ? 'canopy' : 'grass';
-        } else if (selected === 'grass' && grassCount >= MAX_GRASS_VEGETATION) {
+        } else if (selected === 'grass' && grassCount >= MAX_GRASS_PATCHES) {
           selected = tallWeight >= shrubWeight ? 'canopy' : 'shrub';
         }
 
         if (
-          (selected === 'canopy' && canopyCount >= MAX_CANOPY_VEGETATION) ||
-          (selected === 'shrub' && shrubCount >= MAX_SHRUB_VEGETATION) ||
-          (selected === 'grass' && grassCount >= MAX_GRASS_VEGETATION)
+          (selected === 'canopy' && canopyCount >= MAX_CANOPY_TREES) ||
+          (selected === 'shrub' && shrubCount >= MAX_SHRUBS) ||
+          (selected === 'grass' && grassCount >= MAX_GRASS_PATCHES)
         ) {
           continue;
         }
@@ -952,44 +1163,140 @@ export class SceneView {
         const sizeNoise = hash2D(x + 13, y + 23, seed);
         const hueNoise = hash2D(x - 71, y + 5, seed);
         const rotNoise = hash2D(x + 31, y - 17, seed);
-        this.vegetationDummy.position.set(x - half, height, y - half);
-        this.vegetationDummy.rotation.set(0, rotNoise * Math.PI * 2, 0);
+        const rotation = rotNoise * Math.PI * 2;
+        const originX = x - half;
+        const originZ = y - half;
 
         if (selected === 'canopy') {
-          const scale =
-            (0.64 + sizeNoise * 1.06) * (0.72 + fertility * 0.38 + clampedVitality * 0.14);
-          this.vegetationDummy.position.y += 0.09;
-          this.vegetationDummy.scale.set(scale * 0.52, scale * 1.36, scale * 0.52);
+          const speciesNoise = hash2D(x + 91, y - 27, seed + 313);
+          const coniferThreshold = THREE.MathUtils.clamp(
+            0.52 + ridge * 0.1 - valley * 0.08,
+            0.2,
+            0.85
+          );
+          const isConifer = speciesNoise < coniferThreshold;
+
+          const canopyScale =
+            (0.62 + sizeNoise * 1.02) * (0.74 + fertility * 0.34 + clampedVitality * 0.18);
+          const trunkHeight = canopyScale * (isConifer ? 0.96 : 0.82);
+          const trunkRadius = canopyScale * (isConifer ? 0.1 : 0.13);
+
+          this.vegetationDummy.position.set(originX, height + trunkHeight * 0.5 + 0.03, originZ);
+          this.vegetationDummy.rotation.set(0, rotation, 0);
+          this.vegetationDummy.scale.set(trunkRadius, trunkHeight, trunkRadius);
           this.vegetationDummy.updateMatrix();
-          this.canopyMesh.setMatrixAt(canopyCount, this.vegetationDummy.matrix);
+          this.canopyTrunkMesh.setMatrixAt(canopyTrunkCount, this.vegetationDummy.matrix);
+          const trunkHue = 0.08 + hueNoise * 0.03;
+          const trunkSat = THREE.MathUtils.clamp(0.28 + fertility * 0.08, 0, 1);
+          const trunkLight = THREE.MathUtils.clamp(0.2 + fertility * 0.08 + sizeNoise * 0.04, 0, 1);
+          this.vegetationColor.setHSL(trunkHue, trunkSat, trunkLight);
+          this.canopyTrunkMesh.setColorAt(canopyTrunkCount, this.vegetationColor);
+          canopyTrunkCount += 1;
 
           const hue = 0.22 + moisture * 0.06 + clampedVitality * 0.03 + hueNoise * 0.02;
-          const saturation = THREE.MathUtils.clamp(0.18 + moisture * 0.26 + wetness * 0.08, 0, 1);
-          const lightness = THREE.MathUtils.clamp(
-            0.4 + fertility * 0.2 + clampedVitality * 0.1 + sizeNoise * 0.04,
+          const saturation = THREE.MathUtils.clamp(
+            (isConifer ? 0.14 : 0.18) + moisture * 0.24 + wetness * 0.08,
             0,
             1
           );
+          const lightness = THREE.MathUtils.clamp(
+            (isConifer ? 0.38 : 0.42) +
+              fertility * 0.18 +
+              clampedVitality * 0.08 +
+              sizeNoise * 0.04,
+            0,
+            1
+          );
+
+          this.vegetationDummy.position.set(originX, height + trunkHeight + 0.08, originZ);
+          this.vegetationDummy.rotation.set(0, rotation, 0);
+          if (isConifer) {
+            this.vegetationDummy.scale.set(
+              canopyScale * 0.72,
+              canopyScale * 1.24,
+              canopyScale * 0.72
+            );
+          } else {
+            this.vegetationDummy.scale.set(
+              canopyScale * 0.92,
+              canopyScale * 0.94,
+              canopyScale * 0.92
+            );
+          }
+          this.vegetationDummy.updateMatrix();
           this.vegetationColor.setHSL(hue, saturation, lightness);
-          this.canopyMesh.setColorAt(canopyCount, this.vegetationColor);
+          if (isConifer) {
+            this.canopyConiferLeafMesh.setMatrixAt(canopyConiferCount, this.vegetationDummy.matrix);
+            this.canopyConiferLeafMesh.setColorAt(canopyConiferCount, this.vegetationColor);
+            canopyConiferCount += 1;
+          } else {
+            this.canopyBroadleafLeafMesh.setMatrixAt(
+              canopyBroadleafCount,
+              this.vegetationDummy.matrix
+            );
+            this.canopyBroadleafLeafMesh.setColorAt(canopyBroadleafCount, this.vegetationColor);
+            canopyBroadleafCount += 1;
+          }
           canopyCount += 1;
         } else if (selected === 'shrub') {
-          const scale = (0.42 + sizeNoise * 0.82) * (0.72 + fertility * 0.33);
-          this.vegetationDummy.position.y += 0.05;
-          this.vegetationDummy.scale.set(scale * 0.92, scale * 0.64, scale * 0.92);
+          const speciesNoise = hash2D(x - 49, y + 37, seed + 503);
+          const isRoundShrub = speciesNoise < 0.56;
+          const shrubScale = (0.4 + sizeNoise * 0.74) * (0.74 + fertility * 0.28);
+          const trunkHeight = shrubScale * 0.34;
+          const trunkRadius = shrubScale * 0.12;
+
+          this.vegetationDummy.position.set(originX, height + trunkHeight * 0.5 + 0.01, originZ);
+          this.vegetationDummy.rotation.set(0, rotation, 0);
+          this.vegetationDummy.scale.set(trunkRadius, trunkHeight, trunkRadius);
           this.vegetationDummy.updateMatrix();
-          this.shrubMesh.setMatrixAt(shrubCount, this.vegetationDummy.matrix);
+          this.shrubTrunkMesh.setMatrixAt(shrubTrunkCount, this.vegetationDummy.matrix);
+          const trunkHue = 0.08 + hueNoise * 0.03;
+          const trunkSat = THREE.MathUtils.clamp(0.26 + fertility * 0.08, 0, 1);
+          const trunkLight = THREE.MathUtils.clamp(
+            0.21 + fertility * 0.07 + sizeNoise * 0.04,
+            0,
+            1
+          );
+          this.vegetationColor.setHSL(trunkHue, trunkSat, trunkLight);
+          this.shrubTrunkMesh.setColorAt(shrubTrunkCount, this.vegetationColor);
+          shrubTrunkCount += 1;
 
           const hue = 0.2 + moisture * 0.04 + hueNoise * 0.03;
-          const saturation = THREE.MathUtils.clamp(0.16 + moisture * 0.22 + fertility * 0.12, 0, 1);
-          const lightness = THREE.MathUtils.clamp(0.38 + fertility * 0.18 + sizeNoise * 0.04, 0, 1);
+          const saturation = THREE.MathUtils.clamp(
+            (isRoundShrub ? 0.18 : 0.15) + moisture * 0.2 + fertility * 0.12,
+            0,
+            1
+          );
+          const lightness = THREE.MathUtils.clamp(
+            (isRoundShrub ? 0.4 : 0.37) + fertility * 0.16 + sizeNoise * 0.04,
+            0,
+            1
+          );
+
+          this.vegetationDummy.position.set(originX, height + trunkHeight + 0.05, originZ);
+          this.vegetationDummy.rotation.set(0, rotation, 0);
+          if (isRoundShrub) {
+            this.vegetationDummy.scale.set(shrubScale * 0.86, shrubScale * 0.8, shrubScale * 0.86);
+          } else {
+            this.vegetationDummy.scale.set(shrubScale * 0.78, shrubScale * 0.92, shrubScale * 0.78);
+          }
+          this.vegetationDummy.updateMatrix();
           this.vegetationColor.setHSL(hue, saturation, lightness);
-          this.shrubMesh.setColorAt(shrubCount, this.vegetationColor);
+          if (isRoundShrub) {
+            this.shrubRoundLeafMesh.setMatrixAt(shrubRoundCount, this.vegetationDummy.matrix);
+            this.shrubRoundLeafMesh.setColorAt(shrubRoundCount, this.vegetationColor);
+            shrubRoundCount += 1;
+          } else {
+            this.shrubTuftLeafMesh.setMatrixAt(shrubTuftCount, this.vegetationDummy.matrix);
+            this.shrubTuftLeafMesh.setColorAt(shrubTuftCount, this.vegetationColor);
+            shrubTuftCount += 1;
+          }
           shrubCount += 1;
         } else {
           const scale =
             (0.27 + sizeNoise * 0.58) * (0.82 + fertility * 0.24 + clampedVitality * 0.14);
-          this.vegetationDummy.position.y += 0.03;
+          this.vegetationDummy.position.set(originX, height + 0.03, originZ);
+          this.vegetationDummy.rotation.set(0, rotation, 0);
           this.vegetationDummy.scale.set(scale * 0.54, scale * 0.86, scale * 0.54);
           this.vegetationDummy.updateMatrix();
           this.grassMesh.setMatrixAt(grassCount, this.vegetationDummy.matrix);
@@ -1008,8 +1315,12 @@ export class SceneView {
       }
     }
 
-    this.canopyMesh.count = canopyCount;
-    this.shrubMesh.count = shrubCount;
+    this.canopyConiferLeafMesh.count = canopyConiferCount;
+    this.canopyBroadleafLeafMesh.count = canopyBroadleafCount;
+    this.canopyTrunkMesh.count = canopyTrunkCount;
+    this.shrubRoundLeafMesh.count = shrubRoundCount;
+    this.shrubTuftLeafMesh.count = shrubTuftCount;
+    this.shrubTrunkMesh.count = shrubTrunkCount;
     this.grassMesh.count = grassCount;
     this.vegetationCounts = {
       canopy: canopyCount,
@@ -1018,15 +1329,31 @@ export class SceneView {
       total: canopyCount + shrubCount + grassCount
     };
 
-    this.canopyMesh.instanceMatrix.needsUpdate = true;
-    this.shrubMesh.instanceMatrix.needsUpdate = true;
+    this.canopyConiferLeafMesh.instanceMatrix.needsUpdate = true;
+    this.canopyBroadleafLeafMesh.instanceMatrix.needsUpdate = true;
+    this.canopyTrunkMesh.instanceMatrix.needsUpdate = true;
+    this.shrubRoundLeafMesh.instanceMatrix.needsUpdate = true;
+    this.shrubTuftLeafMesh.instanceMatrix.needsUpdate = true;
+    this.shrubTrunkMesh.instanceMatrix.needsUpdate = true;
     this.grassMesh.instanceMatrix.needsUpdate = true;
 
-    if (this.canopyMesh.instanceColor) {
-      this.canopyMesh.instanceColor.needsUpdate = true;
+    if (this.canopyConiferLeafMesh.instanceColor) {
+      this.canopyConiferLeafMesh.instanceColor.needsUpdate = true;
     }
-    if (this.shrubMesh.instanceColor) {
-      this.shrubMesh.instanceColor.needsUpdate = true;
+    if (this.canopyBroadleafLeafMesh.instanceColor) {
+      this.canopyBroadleafLeafMesh.instanceColor.needsUpdate = true;
+    }
+    if (this.canopyTrunkMesh.instanceColor) {
+      this.canopyTrunkMesh.instanceColor.needsUpdate = true;
+    }
+    if (this.shrubRoundLeafMesh.instanceColor) {
+      this.shrubRoundLeafMesh.instanceColor.needsUpdate = true;
+    }
+    if (this.shrubTuftLeafMesh.instanceColor) {
+      this.shrubTuftLeafMesh.instanceColor.needsUpdate = true;
+    }
+    if (this.shrubTrunkMesh.instanceColor) {
+      this.shrubTrunkMesh.instanceColor.needsUpdate = true;
     }
     if (this.grassMesh.instanceColor) {
       this.grassMesh.instanceColor.needsUpdate = true;
@@ -1038,73 +1365,132 @@ export class SceneView {
     daylight: number;
     cloudiness: number;
     rainIntensity: number;
+    windStrength: number;
+    windDirection: number;
+    windGustiness: number;
   }): void {
     const dayPhase = state.dayPhase - Math.floor(state.dayPhase);
     const daylight = THREE.MathUtils.clamp(state.daylight, 0, 1);
     const cloudiness = THREE.MathUtils.clamp(state.cloudiness, 0, 1);
     const rainIntensity = THREE.MathUtils.clamp(state.rainIntensity, 0, 1);
+    const windStrength = THREE.MathUtils.clamp(state.windStrength, 0, 1);
+    const windDirection = state.windDirection;
+    const windGustiness = THREE.MathUtils.clamp(state.windGustiness, 0, 1);
 
     const sunAngle = (dayPhase - 0.25) * TAU;
     const sunHeight = Math.sin(sunAngle);
-    const dawnDusk = THREE.MathUtils.clamp(1 - Math.abs(sunHeight) * 3.3, 0, 1);
-    const warmBand = THREE.MathUtils.clamp(dawnDusk * (0.35 + daylight * 0.65), 0, 1);
+    const dawnWeight = phaseWeight(dayPhase, 0.25, 0.13);
+    const dayWeight = phaseWeight(dayPhase, 0.5, 0.25);
+    const duskWeight = phaseWeight(dayPhase, 0.75, 0.14);
+    const nightWeight = phaseWeight(dayPhase, 0.0, 0.32);
+    const weightTotal = dawnWeight + dayWeight + duskWeight + nightWeight + 0.0001;
+    const dawnMix = dawnWeight / weightTotal;
+    const dayMix = dayWeight / weightTotal;
+    const duskMix = duskWeight / weightTotal;
+    const nightMix = nightWeight / weightTotal;
+    const warmBand = THREE.MathUtils.clamp((dawnMix + duskMix) * 1.45 + dayMix * 0.15, 0, 1);
     const stormBlend = THREE.MathUtils.clamp(cloudiness * 0.42 + rainIntensity * 0.6, 0, 1);
 
-    this.tempColorA.copy(SKY_NIGHT).lerp(SKY_DAY, daylight);
-    this.tempColorB.copy(SKY_DUSK).lerp(this.tempColorA, daylight);
+    setWeightedColor(
+      this.tempColorA,
+      SKY_DAWN,
+      dawnMix,
+      SKY_DAY,
+      dayMix,
+      SKY_DUSK,
+      duskMix,
+      SKY_NIGHT,
+      nightMix
+    ).lerp(SKY_DAY, daylight * 0.12);
     const background = this.scene.background;
     if (background instanceof THREE.Color) {
       background
         .copy(this.tempColorA)
-        .lerp(SKY_DUSK, warmBand * 0.45)
+        .lerp(SKY_DUSK, warmBand * 0.28)
         .lerp(SKY_STORM, stormBlend);
     }
 
-    this.tempColorC.copy(FOG_NIGHT).lerp(FOG_DAY, daylight).lerp(FOG_STORM, stormBlend);
+    setWeightedColor(
+      this.tempColorB,
+      FOG_DAWN,
+      dawnMix,
+      FOG_DAY,
+      dayMix,
+      FOG_DAWN,
+      duskMix * 0.9,
+      FOG_NIGHT,
+      nightMix
+    ).lerp(FOG_STORM, stormBlend * 0.85);
     const fog = this.scene.fog;
     if (fog instanceof THREE.Fog) {
-      fog.color.copy(this.tempColorC);
-      fog.near = 130 + cloudiness * 24 + rainIntensity * 20;
-      fog.far = 410 - cloudiness * 18 - rainIntensity * 18;
+      fog.color.copy(this.tempColorB);
+      fog.near = 120 + cloudiness * 28 + rainIntensity * 22;
+      fog.far = 395 - cloudiness * 24 - rainIntensity * 26;
     }
 
     const sunIntensity =
-      (0.12 + Math.max(0, sunHeight) * 0.95) * (1 - cloudiness * 0.38) * (1 - rainIntensity * 0.24);
+      (0.1 + Math.max(0, sunHeight) * 1.02 + duskMix * 0.16 + dawnMix * 0.1) *
+      (1 - cloudiness * 0.4) *
+      (1 - rainIntensity * 0.24);
     this.sunLight.intensity = sunIntensity;
     this.sunLight.position.set(
       Math.cos(sunAngle) * 52,
       30 + sunHeight * 56,
       Math.sin(sunAngle) * 34
     );
-    this.tempColorA.setRGB(0.94, 0.96, 1);
-    this.tempColorB.setRGB(1, 0.76, 0.58);
-    this.sunLight.color.copy(this.tempColorA).lerp(this.tempColorB, warmBand);
+    this.tempColorA.setRGB(1.0, 0.86, 0.66);
+    this.tempColorB.setRGB(0.95, 0.97, 1.0);
+    this.tempColorC.copy(this.tempColorA).lerp(this.tempColorB, dayMix * 0.95 + dawnMix * 0.25);
+    this.sunLight.color.copy(this.tempColorC);
 
-    const moonIntensity = (0.08 + (1 - daylight) * 0.42) * (1 - cloudiness * 0.3);
+    const moonIntensity = (0.06 + nightMix * 0.58 + duskMix * 0.12) * (1 - cloudiness * 0.3);
     this.moonLight.intensity = moonIntensity;
     this.moonLight.position.set(
       -Math.cos(sunAngle) * 48,
       32 + Math.max(0, -sunHeight) * 46,
       -Math.sin(sunAngle) * 30
     );
-    this.tempColorC.setRGB(0.56, 0.66, 0.82);
-    this.moonLight.color.copy(this.tempColorC);
+    this.tempColorA.setRGB(0.54, 0.66, 0.84);
+    this.tempColorB.setRGB(0.62, 0.7, 0.84);
+    this.moonLight.color.copy(this.tempColorA).lerp(this.tempColorB, cloudiness * 0.45);
 
-    const hemiIntensity = 0.26 + daylight * 0.46 + cloudiness * 0.1;
+    const hemiIntensity =
+      0.24 + daylight * 0.4 + dawnMix * 0.12 + duskMix * 0.18 + cloudiness * 0.08;
     this.hemiLight.intensity = hemiIntensity;
-    this.tempColorA.setRGB(1, 0.95, 0.84);
-    this.tempColorB.setRGB(0.64, 0.74, 0.78);
+    this.tempColorA.setRGB(1.0, 0.93, 0.8);
+    this.tempColorB.setRGB(0.64, 0.74, 0.8);
     this.hemiLight.color
       .copy(this.tempColorA)
-      .lerp(this.tempColorB, cloudiness * 0.65 + rainIntensity * 0.3);
-    this.tempColorC.setRGB(0.32, 0.38, 0.38);
-    this.hemiLight.groundColor.copy(this.tempColorC).lerp(HEMI_GROUND_DAY, daylight * 0.7);
+      .lerp(this.tempColorB, cloudiness * 0.64 + rainIntensity * 0.32 + nightMix * 0.35);
+    this.tempColorC.setRGB(0.3, 0.36, 0.36);
+    this.hemiLight.groundColor
+      .copy(this.tempColorC)
+      .lerp(HEMI_GROUND_DAY, dayMix * 0.9 + dawnMix * 0.4);
 
-    this.renderer.toneMappingExposure = 0.66 + daylight * 0.36 - rainIntensity * 0.05;
+    this.renderer.toneMappingExposure =
+      0.58 + dayMix * 0.34 + (dawnMix + duskMix) * 0.34 + nightMix * 0.1 - rainIntensity * 0.04;
     this.waterMaterial.uniforms.uDaylight.value = daylight;
     this.waterMaterial.uniforms.uCloudiness.value = cloudiness;
     this.waterMaterial.uniforms.uRainIntensity.value = rainIntensity;
+    this.waterMaterial.uniforms.uRainSplashScale.value = THREE.MathUtils.lerp(
+      0.2,
+      0.48,
+      rainIntensity
+    );
     this.atmosphereRainIntensity = rainIntensity;
+    this.atmosphereWindStrength = windStrength;
+    this.atmosphereWindDirection = ((windDirection % TAU) + TAU) % TAU;
+    this.atmosphereWindGustiness = windGustiness;
+    this.windDirectionVector.set(
+      Math.cos(this.atmosphereWindDirection),
+      Math.sin(this.atmosphereWindDirection)
+    );
+    if (this.windDirectionVector.lengthSq() < 1e-6) {
+      this.windDirectionVector.set(1, 0);
+    } else {
+      this.windDirectionVector.normalize();
+    }
+    this.applyWindUniforms();
   }
 
   render(): void {
@@ -1113,7 +1499,8 @@ export class SceneView {
     this.previousFrameTime = now;
     this.waterMaterial.uniforms.uTime.value = now;
     this.updateRainParticles(deltaSeconds, now);
-    for (const material of this.vegetationMaterials) {
+    this.applyWindUniforms();
+    for (const material of this.windVegetationMaterials) {
       const shader = material.userData.shader;
       if (shader) {
         const windUniform = shader.uniforms.uWindTime as THREE.IUniform<number> | undefined;
@@ -1134,8 +1521,12 @@ export class SceneView {
     this.waterGeometry.dispose();
     this.riverGuideGeometry.dispose();
     this.rainGeometry.dispose();
-    this.canopyMesh.geometry.dispose();
-    this.shrubMesh.geometry.dispose();
+    this.canopyConiferLeafMesh.geometry.dispose();
+    this.canopyBroadleafLeafMesh.geometry.dispose();
+    this.canopyTrunkMesh.geometry.dispose();
+    this.shrubRoundLeafMesh.geometry.dispose();
+    this.shrubTuftLeafMesh.geometry.dispose();
+    this.shrubTrunkMesh.geometry.dispose();
     this.grassMesh.geometry.dispose();
 
     const terrainMaterial = this.terrainMesh.material;
@@ -1167,7 +1558,10 @@ export class SceneView {
 
     this.rainMaterial.dispose();
 
-    for (const material of this.vegetationMaterials) {
+    for (const material of this.windVegetationMaterials) {
+      material.dispose();
+    }
+    for (const material of this.staticVegetationMaterials) {
       material.dispose();
     }
 
@@ -1196,8 +1590,16 @@ export class SceneView {
     const cameraX = this.camera.position.x;
     const cameraY = this.camera.position.y;
     const cameraZ = this.camera.position.z;
-    const windX = Math.sin(nowSeconds * 0.63) * 0.19;
-    const windZ = Math.cos(nowSeconds * 0.47) * 0.12;
+    const gustWave =
+      Math.sin(nowSeconds * 1.12 + this.atmosphereWindDirection * 0.7) * 0.5 +
+      Math.sin(nowSeconds * 0.58 + this.atmosphereWindDirection * 1.4) * 0.35;
+    const gustScale =
+      0.72 +
+      (gustWave * 0.5 + 0.5) * THREE.MathUtils.lerp(0.38, 0.92, this.atmosphereWindGustiness);
+    const driftMagnitude =
+      THREE.MathUtils.lerp(0.02, 0.54, this.atmosphereWindStrength) * gustScale;
+    const windX = this.windDirectionVector.x * driftMagnitude;
+    const windZ = this.windDirectionVector.y * driftMagnitude;
     const fallMultiplier = 0.9 + rainIntensity * 1.7;
 
     for (let index = 0; index < RAIN_PARTICLE_COUNT; index += 1) {
@@ -1227,5 +1629,42 @@ export class SceneView {
     }
 
     this.rainPositionAttr.needsUpdate = true;
+  }
+
+  private applyWindUniforms(): void {
+    const strengthScale = THREE.MathUtils.lerp(0, 2.35, this.atmosphereWindStrength);
+    const speedScale = THREE.MathUtils.lerp(1.02, 2.2, this.atmosphereWindGustiness);
+    const gustiness = THREE.MathUtils.lerp(0, 1, this.atmosphereWindGustiness);
+
+    for (const material of this.windVegetationMaterials) {
+      const shader = material.userData.shader;
+      if (!shader) {
+        continue;
+      }
+
+      const windStrengthUniform = shader.uniforms.uWindStrength as
+        | THREE.IUniform<number>
+        | undefined;
+      if (windStrengthUniform) {
+        windStrengthUniform.value = material.userData.windStrength * strengthScale;
+      }
+
+      const windSpeedUniform = shader.uniforms.uWindSpeed as THREE.IUniform<number> | undefined;
+      if (windSpeedUniform) {
+        windSpeedUniform.value = material.userData.windSpeed * speedScale;
+      }
+
+      const windDirUniform = shader.uniforms.uWindDirection as
+        | THREE.IUniform<THREE.Vector2>
+        | undefined;
+      if (windDirUniform) {
+        windDirUniform.value.copy(this.windDirectionVector);
+      }
+
+      const windGustUniform = shader.uniforms.uWindGustiness as THREE.IUniform<number> | undefined;
+      if (windGustUniform) {
+        windGustUniform.value = gustiness;
+      }
+    }
   }
 }

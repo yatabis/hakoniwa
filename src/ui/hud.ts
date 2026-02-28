@@ -4,6 +4,7 @@ import type { InteractionMode } from '../input/controller';
 
 export type DayCycleMode = 'simulation' | 'manual';
 export type WeatherMode = 'simulation' | 'manual';
+export type WindMode = 'simulation' | 'manual';
 
 export interface HudState {
   tool: ToolMode;
@@ -14,6 +15,10 @@ export interface HudState {
   weatherMode: WeatherMode;
   manualCloudiness: number;
   manualRainIntensity: number;
+  windMode: WindMode;
+  manualWindStrength: number;
+  manualWindDirection: number;
+  manualWindGustiness: number;
   terrainSeed: number;
   radius: number;
   strength: number;
@@ -30,6 +35,10 @@ export interface HudCallbacks {
   onWeatherModeChange: (mode: WeatherMode) => void;
   onManualCloudinessChange: (value: number) => void;
   onManualRainIntensityChange: (value: number) => void;
+  onWindModeChange: (mode: WindMode) => void;
+  onManualWindStrengthChange: (value: number) => void;
+  onManualWindDirectionChange: (value: number) => void;
+  onManualWindGustinessChange: (value: number) => void;
   onRadiusChange: (radius: number) => void;
   onStrengthChange: (strength: number) => void;
   onFlattenHeightChange: (height: number) => void;
@@ -62,6 +71,15 @@ function normalizeUnit(value: number): number {
   return clamp(value, 0, 1);
 }
 
+function normalizeDirection(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const wrapped = value % 360;
+  return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
 export class Hud {
   readonly element: HTMLDivElement;
 
@@ -79,6 +97,14 @@ export class Hud {
   private readonly manualCloudValue: HTMLSpanElement;
   private readonly manualRainInput: HTMLInputElement;
   private readonly manualRainValue: HTMLSpanElement;
+  private readonly windGroup: HTMLDivElement;
+  private readonly windModeInput: HTMLSelectElement;
+  private readonly manualWindStrengthInput: HTMLInputElement;
+  private readonly manualWindStrengthValue: HTMLSpanElement;
+  private readonly manualWindDirectionInput: HTMLInputElement;
+  private readonly manualWindDirectionValue: HTMLSpanElement;
+  private readonly manualWindGustinessInput: HTMLInputElement;
+  private readonly manualWindGustinessValue: HTMLSpanElement;
   private readonly debugPanel: HTMLPreElement;
   private readonly seedInput: HTMLInputElement;
   private readonly radiusInput: HTMLInputElement;
@@ -227,6 +253,93 @@ export class Hud {
       const next = clamp(Number(this.manualRainInput.value), 0, 1);
       this.setManualRainIntensity(next);
       callbacks.onManualRainIntensityChange(next);
+    });
+
+    this.windGroup = document.createElement('div');
+    this.windGroup.className = 'debug-wind';
+
+    const windLabel = document.createElement('label');
+    windLabel.className = 'seed-label';
+    windLabel.textContent = 'Wind (Debug)';
+
+    this.windModeInput = document.createElement('select');
+    this.windModeInput.dataset.testid = 'wind-mode';
+
+    const windSimulationOption = document.createElement('option');
+    windSimulationOption.value = 'simulation';
+    windSimulationOption.textContent = 'Simulation';
+    this.windModeInput.appendChild(windSimulationOption);
+
+    const windManualOption = document.createElement('option');
+    windManualOption.value = 'manual';
+    windManualOption.textContent = 'Manual Override';
+    this.windModeInput.appendChild(windManualOption);
+
+    this.windModeInput.addEventListener('change', () => {
+      const next = this.windModeInput.value === 'manual' ? 'manual' : 'simulation';
+      this.setWindMode(next);
+      callbacks.onWindModeChange(next);
+    });
+    windLabel.appendChild(this.windModeInput);
+    this.windGroup.appendChild(windLabel);
+
+    this.manualWindStrengthInput = document.createElement('input');
+    this.manualWindStrengthInput.type = 'range';
+    this.manualWindStrengthInput.min = '0';
+    this.manualWindStrengthInput.max = '1';
+    this.manualWindStrengthInput.step = '0.01';
+    this.manualWindStrengthInput.dataset.testid = 'manual-wind-strength';
+
+    this.manualWindStrengthValue = document.createElement('span');
+    this.windGroup.appendChild(
+      this.createControlRow('Force', this.manualWindStrengthInput, this.manualWindStrengthValue)
+    );
+    this.manualWindStrengthInput.addEventListener('input', () => {
+      const next = clamp(Number(this.manualWindStrengthInput.value), 0, 1);
+      this.setManualWindStrength(next);
+      callbacks.onManualWindStrengthChange(next);
+    });
+
+    this.manualWindDirectionInput = document.createElement('input');
+    this.manualWindDirectionInput.type = 'range';
+    this.manualWindDirectionInput.min = '0';
+    this.manualWindDirectionInput.max = '359';
+    this.manualWindDirectionInput.step = '1';
+    this.manualWindDirectionInput.dataset.testid = 'manual-wind-direction';
+
+    this.manualWindDirectionValue = document.createElement('span');
+    this.windGroup.appendChild(
+      this.createControlRow(
+        'Direction',
+        this.manualWindDirectionInput,
+        this.manualWindDirectionValue
+      )
+    );
+    this.manualWindDirectionInput.addEventListener('input', () => {
+      const next = normalizeDirection(Number(this.manualWindDirectionInput.value));
+      this.setManualWindDirection(next);
+      callbacks.onManualWindDirectionChange(next);
+    });
+
+    this.manualWindGustinessInput = document.createElement('input');
+    this.manualWindGustinessInput.type = 'range';
+    this.manualWindGustinessInput.min = '0';
+    this.manualWindGustinessInput.max = '1';
+    this.manualWindGustinessInput.step = '0.01';
+    this.manualWindGustinessInput.dataset.testid = 'manual-wind-gustiness';
+
+    this.manualWindGustinessValue = document.createElement('span');
+    this.windGroup.appendChild(
+      this.createControlRow(
+        'Gustiness',
+        this.manualWindGustinessInput,
+        this.manualWindGustinessValue
+      )
+    );
+    this.manualWindGustinessInput.addEventListener('input', () => {
+      const next = clamp(Number(this.manualWindGustinessInput.value), 0, 1);
+      this.setManualWindGustiness(next);
+      callbacks.onManualWindGustinessChange(next);
     });
 
     this.seedGroup = document.createElement('div');
@@ -390,6 +503,7 @@ export class Hud {
     this.element.appendChild(this.seedGroup);
     this.element.appendChild(this.dayCycleGroup);
     this.element.appendChild(this.weatherGroup);
+    this.element.appendChild(this.windGroup);
 
     this.debugPanel = document.createElement('pre');
     this.debugPanel.className = 'hud-debug';
@@ -430,12 +544,18 @@ export class Hud {
     this.seedGroup.classList.toggle('visible', enabled);
     this.dayCycleGroup.classList.toggle('visible', enabled);
     this.weatherGroup.classList.toggle('visible', enabled);
+    this.windGroup.classList.toggle('visible', enabled);
     this.seedInput.disabled = !enabled;
     this.dayCycleModeInput.disabled = !enabled;
     this.manualHourInput.disabled = !enabled || this.state.dayCycleMode !== 'manual';
     this.weatherModeInput.disabled = !enabled;
     this.manualCloudInput.disabled = !enabled || this.state.weatherMode !== 'manual';
     this.manualRainInput.disabled = !enabled || this.state.weatherMode !== 'manual';
+    this.windModeInput.disabled = !enabled;
+    const windManualDisabled = !enabled || this.state.windMode !== 'manual';
+    this.manualWindStrengthInput.disabled = windManualDisabled;
+    this.manualWindDirectionInput.disabled = windManualDisabled;
+    this.manualWindGustinessInput.disabled = windManualDisabled;
     if (!enabled) {
       this.debugPanel.textContent = '';
     }
@@ -480,6 +600,33 @@ export class Hud {
     this.state.manualRainIntensity = normalizeUnit(value);
     this.manualRainInput.value = this.state.manualRainIntensity.toFixed(2);
     this.manualRainValue.textContent = this.state.manualRainIntensity.toFixed(2);
+  }
+
+  setWindMode(mode: WindMode): void {
+    this.state.windMode = mode;
+    this.windModeInput.value = mode;
+    const disabled = !this.state.debugMode || mode !== 'manual';
+    this.manualWindStrengthInput.disabled = disabled;
+    this.manualWindDirectionInput.disabled = disabled;
+    this.manualWindGustinessInput.disabled = disabled;
+  }
+
+  setManualWindStrength(value: number): void {
+    this.state.manualWindStrength = normalizeUnit(value);
+    this.manualWindStrengthInput.value = this.state.manualWindStrength.toFixed(2);
+    this.manualWindStrengthValue.textContent = this.state.manualWindStrength.toFixed(2);
+  }
+
+  setManualWindDirection(value: number): void {
+    this.state.manualWindDirection = normalizeDirection(value);
+    this.manualWindDirectionInput.value = this.state.manualWindDirection.toFixed(0);
+    this.manualWindDirectionValue.textContent = `${this.state.manualWindDirection.toFixed(0)}deg`;
+  }
+
+  setManualWindGustiness(value: number): void {
+    this.state.manualWindGustiness = normalizeUnit(value);
+    this.manualWindGustinessInput.value = this.state.manualWindGustiness.toFixed(2);
+    this.manualWindGustinessValue.textContent = this.state.manualWindGustiness.toFixed(2);
   }
 
   setRadius(radius: number): void {
@@ -534,6 +681,10 @@ export class Hud {
     this.setWeatherMode(this.state.weatherMode);
     this.setManualCloudiness(this.state.manualCloudiness);
     this.setManualRainIntensity(this.state.manualRainIntensity);
+    this.setWindMode(this.state.windMode);
+    this.setManualWindStrength(this.state.manualWindStrength);
+    this.setManualWindDirection(this.state.manualWindDirection);
+    this.setManualWindGustiness(this.state.manualWindGustiness);
     this.setDebugMode(this.state.debugMode);
 
     this.radiusInput.value = String(this.state.radius);
