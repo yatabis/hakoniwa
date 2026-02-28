@@ -38,6 +38,22 @@ interface WeatherOverride {
   rainIntensity: number;
 }
 
+type VegetationKind = 'canopy' | 'shrub' | 'grass';
+
+interface VegetationCellDiagnostics {
+  status: string;
+  slope: number;
+  moisture: number;
+  riparian: number;
+  fertility: number;
+  densityNoise: number;
+  densityLimit: number;
+  canopySuitability: number;
+  shrubSuitability: number;
+  grassSuitability: number;
+  selected: VegetationKind | 'none';
+}
+
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
   throw new Error('Failed to find #app root');
@@ -93,6 +109,147 @@ function formatCellValue(value: number | null): string {
     return '-';
   }
   return value.toFixed(3);
+}
+
+function hashCellNoise(x: number, y: number, seed: number): number {
+  const value = Math.sin((x + seed * 0.001) * 12.9898 + (y - seed * 0.001) * 78.233) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function sampleVegetationCellDiagnostics(
+  state: WorldState,
+  humidity: Float32Array,
+  seed: number,
+  vitality: number,
+  x: number,
+  y: number
+): VegetationCellDiagnostics {
+  const edgeResult: VegetationCellDiagnostics = {
+    status: 'edge cell (vegetation disabled)',
+    slope: 0,
+    moisture: 0,
+    riparian: 0,
+    fertility: 0,
+    densityNoise: 0,
+    densityLimit: 0,
+    canopySuitability: 0,
+    shrubSuitability: 0,
+    grassSuitability: 0,
+    selected: 'none'
+  };
+
+  if (x <= 0 || y <= 0 || x >= state.size - 1 || y >= state.size - 1) {
+    return edgeResult;
+  }
+
+  const index = y * state.size + x;
+  const height = state.terrain[index];
+  const wetness = state.water[index];
+  const moisture = humidity[index] ?? 0;
+  const slope = computeSlopeAt(state.terrain, state.size, x, y);
+
+  const left = state.terrain[y * state.size + (x - 1)];
+  const right = state.terrain[y * state.size + (x + 1)];
+  const up = state.terrain[(y + 1) * state.size + x];
+  const down = state.terrain[(y - 1) * state.size + x];
+  const neighborAvg = (left + right + up + down) * 0.25;
+  const valley = saturate((neighborAvg - height + 0.08) / 1.6);
+  const ridge = saturate((height - neighborAvg - 0.12) / 1.5);
+  const nearbyWetness = Math.max(
+    wetness,
+    state.water[y * state.size + (x - 1)],
+    state.water[y * state.size + (x + 1)],
+    state.water[(y - 1) * state.size + x],
+    state.water[(y + 1) * state.size + x]
+  );
+  const riparian = saturate(nearbyWetness * 4.2);
+  const altitude01 = saturate((height + 8) / 23);
+  const clampedVitality = saturate(vitality);
+  const fertility = saturate(
+    moisture * 0.44 +
+      riparian * 0.3 +
+      valley * 0.24 +
+      clampedVitality * 0.2 -
+      slope * 0.37 -
+      ridge * 0.22
+  );
+
+  const densityNoise = hashCellNoise(x + 17, y - 13, seed + 11);
+  const densityLimit = fertility * 0.95;
+
+  let status = 'spawn candidate';
+  if (height < -7.5 || height > 14) {
+    status = 'blocked: altitude range';
+  } else if (wetness > 0.62) {
+    status = 'blocked: underwater';
+  } else if (moisture < 0.06) {
+    status = 'blocked: low humidity';
+  } else if (slope > 1.2) {
+    status = 'blocked: slope too steep';
+  } else if (fertility < 0.08) {
+    status = 'blocked: low fertility';
+  } else if (densityNoise > densityLimit) {
+    status = 'blocked: density noise gate';
+  }
+
+  const canopySuitability =
+    saturate(
+      (1 - Math.abs(altitude01 - 0.42) * 1.9) *
+        (1 - slope * 0.85) *
+        (0.5 + moisture * 0.5) *
+        (0.62 + valley * 0.3)
+    ) * fertility;
+  const shrubSuitability =
+    saturate(
+      (0.7 + valley * 0.2 + ridge * 0.16) *
+        (1 - slope * 0.55) *
+        (0.45 + moisture * 0.45 + riparian * 0.2) *
+        (1 - Math.max(0, altitude01 - 0.82) * 1.3)
+    ) * fertility;
+  const grassSuitability =
+    saturate(
+      (0.65 + altitude01 * 0.5 + ridge * 0.24) *
+        (1 - slope * 0.32) *
+        (0.38 + moisture * 0.4 + clampedVitality * 0.22)
+    ) * fertility;
+
+  const canopyWeight = canopySuitability * 0.92;
+  const shrubWeight = shrubSuitability * 1.08;
+  const grassWeight = grassSuitability * 1.35;
+  const totalWeight = canopyWeight + shrubWeight + grassWeight;
+
+  let selected: VegetationKind | 'none' = 'none';
+  if (totalWeight >= 0.04) {
+    const pickNoise = hashCellNoise(x - 31, y + 47, seed + 211);
+    const pick = pickNoise * totalWeight;
+    if (pick < canopyWeight) {
+      selected = 'canopy';
+    } else if (pick < canopyWeight + shrubWeight) {
+      selected = 'shrub';
+    } else {
+      selected = 'grass';
+    }
+  } else if (status === 'spawn candidate') {
+    status = 'blocked: low suitability';
+  }
+
+  if (status === 'spawn candidate') {
+    status = `spawn: ${selected}`;
+  }
+
+  return {
+    status,
+    slope,
+    moisture,
+    riparian,
+    fertility,
+    densityNoise,
+    densityLimit,
+    canopySuitability,
+    shrubSuitability,
+    grassSuitability,
+    selected
+  };
 }
 
 function clampHour(value: number): number {
@@ -180,15 +337,15 @@ function createClimateState(
 ): ClimateState {
   const wrappedDayPhase = dayPhase - Math.floor(dayPhase);
   const sunWave = Math.sin((wrappedDayPhase - 0.25) * TAU);
-  const daylight = saturate(0.16 + Math.max(0, sunWave) * 0.9);
+  const daylight = saturate(0.18 + Math.max(0, sunWave) * 0.82);
 
   const cloudSignalA = Math.sin(time * 0.012 + seed * 0.00017) * 0.5 + 0.5;
   const cloudSignalB = Math.sin(time * 0.0045 + seed * 0.00043) * 0.5 + 0.5;
-  let cloudiness = saturate(cloudSignalA * 0.65 + cloudSignalB * 0.35);
+  let cloudiness = saturate(0.1 + (cloudSignalA * 0.62 + cloudSignalB * 0.38) * 0.78);
 
   const rainPulse = Math.sin(time * 0.021 + seed * 0.00091) * 0.5 + 0.5;
-  const rainGate = smoothstep(0.52, 0.9, cloudiness);
-  let rainIntensity = saturate(rainGate * (0.25 + rainPulse * 0.9));
+  const rainGate = smoothstep(0.6, 0.92, cloudiness);
+  let rainIntensity = saturate(rainGate * (0.14 + rainPulse * 0.62));
 
   if (weatherOverride) {
     cloudiness = saturate(weatherOverride.cloudiness);
@@ -335,6 +492,16 @@ function updateDebugReadout(): void {
     debugMode && dayCycleMode === 'manual' ? wrapHour(manualDayHour) : simulatedHour;
   const cycleLabel = debugMode && dayCycleMode === 'manual' ? 'manual' : 'simulation';
   const weatherLabel = debugMode && weatherMode === 'manual' ? 'manual' : 'simulation';
+  const vegetationVitality = currentVegetationVitality();
+  const vegetationCell = sampleVegetationCellDiagnostics(
+    world,
+    humidityMap,
+    world.vegetationSeed,
+    vegetationVitality,
+    diagnostics.x,
+    diagnostics.y
+  );
+  const vegetationCounts = scene.getVegetationCounts();
 
   const lines = [
     `cell: (${diagnostics.x}, ${diagnostics.y}) idx=${diagnostics.index}`,
@@ -344,9 +511,12 @@ function updateDebugReadout(): void {
     `downhillDiff R:${diagnostics.downhillDiffs.right.toFixed(3)} L:${diagnostics.downhillDiffs.left.toFixed(3)} U:${diagnostics.downhillDiffs.up.toFixed(3)} D:${diagnostics.downhillDiffs.down.toFixed(3)}`,
     `outflow/step R:${diagnostics.outflowPotentials.right.toFixed(4)} L:${diagnostics.outflowPotentials.left.toFixed(4)} U:${diagnostics.outflowPotentials.up.toFixed(4)} D:${diagnostics.outflowPotentials.down.toFixed(4)}`,
     `loss/step seep=${diagnostics.seepageLossPerStep.toFixed(5)} edge=${diagnostics.edgeDrainLossPerStep.toFixed(5)} outTotal=${outflowTotal.toFixed(4)}`,
-    `world totalWater=${worldWater.toFixed(2)} activeSources=${world.sources.length} seed=${terrainSeed} daylight=${climateState.daylight.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)}`,
+    `world totalWater=${worldWater.toFixed(2)} activeSources=${world.sources.length} terrainSeed=${terrainSeed} vegetationSeed=${world.vegetationSeed}`,
+    `vegetation draw canopy=${vegetationCounts.canopy} shrub=${vegetationCounts.shrub} grass=${vegetationCounts.grass} total=${vegetationCounts.total} vitality=${vegetationVitality.toFixed(2)}`,
+    `vegetation cell ${vegetationCell.status} selected=${vegetationCell.selected} fertility=${vegetationCell.fertility.toFixed(3)} moisture=${vegetationCell.moisture.toFixed(3)} riparian=${vegetationCell.riparian.toFixed(3)} slope=${vegetationCell.slope.toFixed(3)}`,
+    `vegetation suit canopy=${vegetationCell.canopySuitability.toFixed(3)} shrub=${vegetationCell.shrubSuitability.toFixed(3)} grass=${vegetationCell.grassSuitability.toFixed(3)} density=${vegetationCell.densityNoise.toFixed(3)}/${vegetationCell.densityLimit.toFixed(3)}`,
     `clock mode=${cycleLabel} active=${formatClockHour(activeHour)} sim=${formatClockHour(simulatedHour)} phase=${climateState.dayPhase.toFixed(3)}`,
-    `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)}`
+    `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)} daylight=${climateState.daylight.toFixed(2)}`
   ];
 
   const text = lines.join('\n');
