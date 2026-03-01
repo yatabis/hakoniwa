@@ -45,6 +45,7 @@ test('rain increases total water over time', async ({ page }) => {
   await page.waitForTimeout(1000);
 
   await page.getByTestId('debug-toggle').click();
+  await page.getByTestId('debug-tab-weather').click();
   await page.getByTestId('weather-mode').selectOption('manual');
   await setRange(page, 'manual-cloudiness', 1);
   await setRange(page, 'manual-rain-intensity', 1);
@@ -70,6 +71,7 @@ test('wind force zero disables vegetation sway uniforms', async ({ page }) => {
   await page.waitForTimeout(800);
 
   await page.getByTestId('debug-toggle').click();
+  await page.getByTestId('debug-tab-wind').click();
   await page.getByTestId('wind-mode').selectOption('manual');
   await setRange(page, 'manual-wind-strength', 0);
   await setRange(page, 'manual-wind-gustiness', 1);
@@ -86,9 +88,11 @@ test('wind direction 0 and 180 flips rain drift sign', async ({ page }) => {
   await page.waitForTimeout(800);
 
   await page.getByTestId('debug-toggle').click();
+  await page.getByTestId('debug-tab-weather').click();
   await page.getByTestId('weather-mode').selectOption('manual');
   await setRange(page, 'manual-cloudiness', 1);
   await setRange(page, 'manual-rain-intensity', 1);
+  await page.getByTestId('debug-tab-wind').click();
   await page.getByTestId('wind-mode').selectOption('manual');
   await setRange(page, 'manual-wind-strength', 1);
   await setRange(page, 'manual-wind-gustiness', 1);

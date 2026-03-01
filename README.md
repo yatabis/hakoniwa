@@ -12,6 +12,11 @@ This project uses **Web + Three.js + TypeScript** and targets desktop browsers.
 
 - Production: `https://yatabis.github.io/hakoniwa/`
 
+## Screenshots
+
+![HUD overview](docs/screenshots/hud-overview.png)
+![Photo mode](docs/screenshots/photo-mode.png)
+
 ## Current MVP Scope
 
 Implemented:
@@ -40,6 +45,10 @@ Implemented:
   - day cycle override (simulation/manual hour)
   - weather override (simulation/manual cloud/rain)
 - Vegetation placement based on altitude, slope, water, and humidity
+- Ambient life system
+  - flocking birds (weather/daylight reactive)
+  - water-edge insects (humidity/water/slope constrained)
+  - debug diagnostics API + HUD readout
 - IndexedDB save/load (3 slots)
 - Unit tests + one E2E flow test
 
@@ -97,6 +106,19 @@ One-time setup on GitHub:
 2. Go to **Pages**.
 3. Set **Source** to **GitHub Actions**.
 4. Push to `main` (or run the workflow manually).
+
+Deployment checklist:
+
+1. Run quality gates locally:
+   - `pnpm lint`
+   - `pnpm typecheck`
+   - `pnpm format:check`
+   - `pnpm test`
+   - `pnpm test:e2e`
+2. Confirm `Settings > Pages > Source` is `GitHub Actions`.
+3. Push `main`.
+4. Wait for **Deploy to GitHub Pages** workflow success.
+5. Verify `https://<user>.github.io/<repo>/` loads and HUD controls work.
 
 Manual optional E2E run:
 
@@ -159,20 +181,22 @@ Main panel includes:
 - Brush controls (contextual): Radius, Strength, Flatten target, Source rate
 - Save/Load buttons for slots 1..3
 - Status line
+- Audio + Debug toggles
 - Photo mode (HUD hidden for scenic view, with subtle DOF post effect and screenshot capture)
 - River guide overlay toggle (terrain-derived flow path candidates)
 
-Debug-only panels:
+Debug dock (visible only when Debug is ON):
 
-- Day Cycle (Debug)
-  - `Simulation (24m cycle)`
-  - `Manual Override` + Hour slider (`0..24`)
-- Weather (Debug)
-  - `Simulation`
-  - `Manual Override` + Cloud slider (`0..1`) + Rain slider (`0..1`)
-- Terrain Seed display (read-only)
+- Control tabs: `Time`, `Weather`, `Wind`, `Seed`
+- Readout tabs: `Overview`, `Water`, `Life`, `Cell`
+- `Details` button for compact/full readout toggle (default is compact)
+- Manual overrides:
+  - Day Cycle (simulation/manual hour)
+  - Weather (simulation/manual cloud/rain)
+  - Wind (simulation/manual force/direction/gustiness)
+- Terrain seed display (read-only)
 
-When debug mode is turned off, day cycle and weather modes automatically return to default (`simulation` / `simulation`).
+When debug mode is turned off, day cycle, weather, and wind modes automatically return to `simulation`.
 
 ## Simulation Details
 

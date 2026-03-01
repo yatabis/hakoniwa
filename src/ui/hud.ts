@@ -5,6 +5,8 @@ import type { InteractionMode } from '../input/controller';
 export type DayCycleMode = 'simulation' | 'manual';
 export type WeatherMode = 'simulation' | 'manual';
 export type WindMode = 'simulation' | 'manual';
+type DebugControlTab = 'dayCycle' | 'weather' | 'wind' | 'seed';
+type DebugReadoutTab = 'overview' | 'water' | 'life' | 'cell';
 
 export interface HudState {
   tool: ToolMode;
@@ -101,6 +103,7 @@ export class Hud {
   private readonly manualRainInput: HTMLInputElement;
   private readonly manualRainValue: HTMLSpanElement;
   private readonly windGroup: HTMLDivElement;
+  private readonly debugControlsTabs: Record<DebugControlTab, HTMLButtonElement>;
   private readonly windModeInput: HTMLSelectElement;
   private readonly manualWindStrengthInput: HTMLInputElement;
   private readonly manualWindStrengthValue: HTMLSpanElement;
@@ -108,7 +111,11 @@ export class Hud {
   private readonly manualWindDirectionValue: HTMLSpanElement;
   private readonly manualWindGustinessInput: HTMLInputElement;
   private readonly manualWindGustinessValue: HTMLSpanElement;
+  private readonly debugControls: HTMLDivElement;
+  private readonly debugReadoutHeader: HTMLDivElement;
   private readonly debugPanel: HTMLPreElement;
+  private readonly debugReadoutTabs: Record<DebugReadoutTab, HTMLButtonElement>;
+  private readonly debugExpandButton: HTMLButtonElement;
   private readonly seedInput: HTMLInputElement;
   private readonly radiusInput: HTMLInputElement;
   private readonly radiusValue: HTMLSpanElement;
@@ -125,6 +132,10 @@ export class Hud {
   private readonly status: HTMLParagraphElement;
 
   private state: HudState;
+  private activeDebugControlTab: DebugControlTab = 'dayCycle';
+  private activeDebugReadoutTab: DebugReadoutTab = 'overview';
+  private debugReadoutExpanded = false;
+  private rawDebugReadout = '';
 
   constructor(host: HTMLElement, initialState: HudState, callbacks: HudCallbacks) {
     this.state = { ...initialState };
@@ -160,6 +171,12 @@ export class Hud {
       this.setAudioEnabled(next);
       callbacks.onAudioToggle(next);
     });
+
+    const toggles = document.createElement('div');
+    toggles.className = 'mode-switch';
+    toggles.appendChild(this.audioButton);
+    toggles.appendChild(this.debugButton);
+    this.element.appendChild(toggles);
 
     this.dayCycleGroup = document.createElement('div');
     this.dayCycleGroup.className = 'debug-daycycle';
@@ -373,6 +390,32 @@ export class Hud {
     seedLabel.appendChild(this.seedInput);
     this.seedGroup.appendChild(seedLabel);
 
+    const debugControlTabs = document.createElement('div');
+    debugControlTabs.className = 'debug-tab-row debug-tab-row-controls';
+
+    const createDebugControlTabButton = (
+      tab: DebugControlTab,
+      label: string,
+      testid: string
+    ): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.dataset.testid = testid;
+      button.addEventListener('click', () => {
+        this.setActiveDebugControlTab(tab);
+      });
+      debugControlTabs.appendChild(button);
+      return button;
+    };
+
+    this.debugControlsTabs = {
+      dayCycle: createDebugControlTabButton('dayCycle', 'Time', 'debug-tab-time'),
+      weather: createDebugControlTabButton('weather', 'Weather', 'debug-tab-weather'),
+      wind: createDebugControlTabButton('wind', 'Wind', 'debug-tab-wind'),
+      seed: createDebugControlTabButton('seed', 'Seed', 'debug-tab-seed')
+    };
+
     const tools = document.createElement('div');
     tools.className = 'tool-grid';
 
@@ -512,17 +555,65 @@ export class Hud {
     this.status.textContent = 'Ready';
     this.element.appendChild(this.status);
 
-    this.element.appendChild(this.audioButton);
-    this.element.appendChild(this.debugButton);
-    this.element.appendChild(this.seedGroup);
-    this.element.appendChild(this.dayCycleGroup);
-    this.element.appendChild(this.weatherGroup);
-    this.element.appendChild(this.windGroup);
+    const debugSection = document.createElement('section');
+    debugSection.className = 'debug-section';
+    this.element.appendChild(debugSection);
+
+    this.debugControls = document.createElement('div');
+    this.debugControls.className = 'debug-controls';
+    this.debugControls.appendChild(debugControlTabs);
+    this.debugControls.appendChild(this.dayCycleGroup);
+    this.debugControls.appendChild(this.weatherGroup);
+    this.debugControls.appendChild(this.windGroup);
+    this.debugControls.appendChild(this.seedGroup);
+    debugSection.appendChild(this.debugControls);
+
+    this.debugReadoutHeader = document.createElement('div');
+    this.debugReadoutHeader.className = 'debug-readout-header';
+
+    const debugReadoutTabs = document.createElement('div');
+    debugReadoutTabs.className = 'debug-tab-row debug-tab-row-readout';
+
+    const createDebugReadoutTabButton = (
+      tab: DebugReadoutTab,
+      label: string,
+      testid: string
+    ): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.dataset.testid = testid;
+      button.addEventListener('click', () => {
+        this.setActiveDebugReadoutTab(tab);
+      });
+      debugReadoutTabs.appendChild(button);
+      return button;
+    };
+
+    this.debugReadoutTabs = {
+      overview: createDebugReadoutTabButton('overview', 'Overview', 'debug-readout-tab-overview'),
+      water: createDebugReadoutTabButton('water', 'Water', 'debug-readout-tab-water'),
+      life: createDebugReadoutTabButton('life', 'Life', 'debug-readout-tab-life'),
+      cell: createDebugReadoutTabButton('cell', 'Cell', 'debug-readout-tab-cell')
+    };
+
+    this.debugExpandButton = document.createElement('button');
+    this.debugExpandButton.type = 'button';
+    this.debugExpandButton.className = 'debug-expand-toggle';
+    this.debugExpandButton.dataset.testid = 'debug-readout-expand';
+    this.debugExpandButton.addEventListener('click', () => {
+      this.debugReadoutExpanded = !this.debugReadoutExpanded;
+      this.renderDebugReadout();
+    });
+
+    this.debugReadoutHeader.appendChild(debugReadoutTabs);
+    this.debugReadoutHeader.appendChild(this.debugExpandButton);
+    debugSection.appendChild(this.debugReadoutHeader);
 
     this.debugPanel = document.createElement('pre');
     this.debugPanel.className = 'hud-debug';
     this.debugPanel.dataset.testid = 'debug-readout';
-    this.element.appendChild(this.debugPanel);
+    debugSection.appendChild(this.debugPanel);
 
     host.appendChild(this.element);
 
@@ -560,11 +651,8 @@ export class Hud {
     this.state.debugMode = enabled;
     this.debugButton.classList.toggle('active', enabled);
     this.debugButton.textContent = enabled ? 'D Debug: ON' : 'D Debug: OFF';
-    this.debugPanel.classList.toggle('visible', enabled);
-    this.seedGroup.classList.toggle('visible', enabled);
-    this.dayCycleGroup.classList.toggle('visible', enabled);
-    this.weatherGroup.classList.toggle('visible', enabled);
-    this.windGroup.classList.toggle('visible', enabled);
+    this.debugControls.classList.toggle('visible', enabled);
+    this.debugReadoutHeader.classList.toggle('visible', enabled);
     this.seedInput.disabled = !enabled;
     this.dayCycleModeInput.disabled = !enabled;
     this.manualHourInput.disabled = !enabled || this.state.dayCycleMode !== 'manual';
@@ -577,12 +665,15 @@ export class Hud {
     this.manualWindDirectionInput.disabled = windManualDisabled;
     this.manualWindGustinessInput.disabled = windManualDisabled;
     if (!enabled) {
-      this.debugPanel.textContent = '';
+      this.debugReadoutExpanded = false;
     }
+    this.updateDebugControlVisibility();
+    this.renderDebugReadout();
   }
 
   setDebugReadout(text: string): void {
-    this.debugPanel.textContent = text;
+    this.rawDebugReadout = text;
+    this.renderDebugReadout();
   }
 
   setTerrainSeed(seed: number): void {
@@ -659,6 +750,113 @@ export class Hud {
     this.status.textContent = message;
   }
 
+  private setActiveDebugControlTab(tab: DebugControlTab): void {
+    this.activeDebugControlTab = tab;
+    for (const [key, button] of Object.entries(this.debugControlsTabs) as [
+      DebugControlTab,
+      HTMLButtonElement
+    ][]) {
+      button.classList.toggle('active', key === tab);
+    }
+    this.updateDebugControlVisibility();
+  }
+
+  private setActiveDebugReadoutTab(tab: DebugReadoutTab): void {
+    this.activeDebugReadoutTab = tab;
+    for (const [key, button] of Object.entries(this.debugReadoutTabs) as [
+      DebugReadoutTab,
+      HTMLButtonElement
+    ][]) {
+      button.classList.toggle('active', key === tab);
+    }
+    this.renderDebugReadout();
+  }
+
+  private updateDebugControlVisibility(): void {
+    const debugVisible = this.state.debugMode;
+    this.dayCycleGroup.classList.toggle(
+      'visible',
+      debugVisible && this.activeDebugControlTab === 'dayCycle'
+    );
+    this.weatherGroup.classList.toggle(
+      'visible',
+      debugVisible && this.activeDebugControlTab === 'weather'
+    );
+    this.windGroup.classList.toggle(
+      'visible',
+      debugVisible && this.activeDebugControlTab === 'wind'
+    );
+    this.seedGroup.classList.toggle(
+      'visible',
+      debugVisible && this.activeDebugControlTab === 'seed'
+    );
+  }
+
+  private getReadoutLinesForTab(lines: string[]): string[] {
+    const pickStartsWith = (prefix: string): string | null =>
+      lines.find((line) => line.startsWith(prefix)) ?? null;
+    const pickContains = (needle: string): string | null =>
+      lines.find((line) => line.includes(needle)) ?? null;
+    switch (this.activeDebugReadoutTab) {
+      case 'overview':
+        return [
+          pickStartsWith('world ') ?? pickContains('totalWater=') ?? '',
+          pickStartsWith('clock ') ?? '',
+          pickStartsWith('weather ') ?? '',
+          pickStartsWith('wind ') ?? '',
+          pickStartsWith('life birds ') ?? '',
+          pickStartsWith('sound ') ?? ''
+        ].filter((line) => line.length > 0);
+      case 'water':
+        return lines.filter(
+          (line) =>
+            line.startsWith('water ') ||
+            line.startsWith('humidity ') ||
+            line.startsWith('world ') ||
+            line.startsWith('weather ')
+        );
+      case 'life':
+        return lines.filter((line) => line.startsWith('vegetation ') || line.startsWith('life '));
+      case 'cell':
+        return lines.filter(
+          (line) =>
+            line.startsWith('cell:') ||
+            line.startsWith('terrain ') ||
+            line.startsWith('water ') ||
+            line.startsWith('humidity ')
+        );
+      default:
+        return lines;
+    }
+  }
+
+  private renderDebugReadout(): void {
+    const enabled = this.state.debugMode;
+    this.debugPanel.classList.toggle('visible', enabled);
+    this.debugExpandButton.hidden = !enabled;
+    if (!enabled) {
+      this.debugPanel.textContent = '';
+      return;
+    }
+
+    const lines = this.rawDebugReadout
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    const tabLines = this.getReadoutLinesForTab(lines);
+    const compactLineCount = this.activeDebugReadoutTab === 'overview' ? 5 : 4;
+    const displayedLines = this.debugReadoutExpanded
+      ? tabLines
+      : tabLines.slice(0, compactLineCount);
+    const collapsed = !this.debugReadoutExpanded && tabLines.length > compactLineCount;
+    if (collapsed) {
+      displayedLines.push(`... +${tabLines.length - compactLineCount} lines`);
+    }
+    this.debugPanel.textContent = displayedLines.join('\n');
+    this.debugExpandButton.textContent = this.debugReadoutExpanded ? 'Less' : 'Details';
+    this.debugExpandButton.classList.toggle('active', this.debugReadoutExpanded);
+  }
+
   private createControlRow(
     labelText: string,
     input: HTMLInputElement,
@@ -706,6 +904,8 @@ export class Hud {
     this.setManualWindStrength(this.state.manualWindStrength);
     this.setManualWindDirection(this.state.manualWindDirection);
     this.setManualWindGustiness(this.state.manualWindGustiness);
+    this.setActiveDebugControlTab(this.activeDebugControlTab);
+    this.setActiveDebugReadoutTab(this.activeDebugReadoutTab);
     this.setDebugMode(this.state.debugMode);
 
     this.radiusInput.value = String(this.state.radius);

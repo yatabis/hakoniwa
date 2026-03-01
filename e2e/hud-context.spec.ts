@@ -55,6 +55,8 @@ test('debug readout includes vegetation diagnostics', async ({ page }) => {
 
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.getByTestId('debug-toggle').click();
+  await page.getByTestId('debug-readout-tab-life').click();
+  await page.getByTestId('debug-readout-expand').click();
 
   const readout = page.getByTestId('debug-readout');
   await expect(readout).toContainText('vegetation draw');
@@ -89,6 +91,7 @@ test('heavy rain reduces bird activity in debug readout', async ({ page }) => {
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
 
   await page.getByTestId('debug-toggle').click();
+  await page.getByTestId('debug-tab-weather').click();
   await page.getByTestId('weather-mode').selectOption('manual');
   await page.getByTestId('manual-rain-intensity').evaluate((node) => {
     const input = node as HTMLInputElement;

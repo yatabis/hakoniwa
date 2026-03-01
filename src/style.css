@@ -81,7 +81,7 @@ canvas {
 .audio-toggle,
 .debug-toggle {
   width: 100%;
-  margin-bottom: 10px;
+  margin-bottom: 0;
   border: 1px solid rgba(66, 78, 67, 0.34);
   background: rgba(255, 255, 255, 0.62);
   color: var(--text-main);
@@ -153,6 +153,72 @@ canvas {
 .debug-weather.visible,
 .debug-wind.visible {
   display: block;
+}
+
+.debug-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(66, 78, 67, 0.22);
+}
+
+.debug-controls {
+  display: none;
+}
+
+.debug-controls.visible {
+  display: block;
+}
+
+.debug-readout-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.debug-readout-header.visible {
+  display: flex;
+}
+
+.debug-tab-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+
+.debug-tab-row button,
+.debug-expand-toggle {
+  border: 1px solid rgba(66, 78, 67, 0.34);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--text-main);
+  border-radius: 9px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.debug-tab-row button:hover,
+.debug-expand-toggle:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.debug-tab-row button.active,
+.debug-expand-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent-strong);
+  color: #f4f6ed;
+}
+
+.debug-expand-toggle {
+  width: 72px;
+  flex: 0 0 auto;
 }
 
 .tool-grid {
@@ -250,7 +316,7 @@ canvas {
 
 .hud-debug {
   display: none;
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   padding: 8px 10px;
   border-radius: 10px;
   background: rgba(36, 42, 38, 0.9);
@@ -314,6 +380,10 @@ canvas {
 
   .tool-grid,
   .slot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .debug-tab-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
