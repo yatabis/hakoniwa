@@ -9,6 +9,7 @@ import {
   totalWater
 } from './core';
 import type { BrushSettings, SimParams, ToolMode, WaterSource, WorldState } from './core';
+import { AmbientAudioController } from './audio/ambient';
 import { InputController } from './input/controller';
 import type { InteractionMode } from './input/controller';
 import { loadWorldFromSlot, saveWorldToSlot } from './persistence/storage';
@@ -21,6 +22,11 @@ const DAY_CYCLE_SECONDS = 24 * 60;
 const DAY_START_HOUR = 7;
 const HUMIDITY_DIFFUSION_RATE = 0.13;
 const HUMIDITY_DIFFUSION_STEPS = 4;
+const WATER_AUDIO_SAMPLE_INTERVAL = 0.12;
+const WATER_AUDIO_SEARCH_RADIUS = 20;
+const WATER_AUDIO_MIN_DEPTH = 0.008;
+const WATER_AUDIO_AUDIBLE_DISTANCE = 16;
+const WATER_AUDIO_FLOW_NORMALIZER = 1.4;
 const PHOTO_FOV_MIN = 30;
 const PHOTO_FOV_MAX = 78;
 const PHOTO_DOF_MIN = 0;
@@ -97,6 +103,7 @@ const simParams: SimParams = {
 
 let toolMode: ToolMode = 'raise';
 let interactionMode: InteractionMode = 'edit';
+let audioEnabled = true;
 let debugMode = false;
 let dayCycleMode: DayCycleMode = 'simulation';
 let manualDayHour = DAY_START_HOUR;
@@ -129,6 +136,11 @@ let interactionModeBeforePhoto: InteractionMode = interactionMode;
 let humidityMap = new Float32Array(world.size * world.size);
 let humidityScratch = new Float32Array(world.size * world.size);
 let humidityStepCounter = 0;
+let waterAudioProximity = 0;
+let waterAudioFlow = 0;
+let waterAudioDepth = 0;
+let waterAudioSampleTimer = 0;
+const ambientAudio = new AmbientAudioController();
 
 function formatCellValue(value: number | null): string {
   if (value === null) {
@@ -517,6 +529,92 @@ function currentVegetationVitality(): number {
   return saturate(0.34 + climateState.daylight * 0.46 + climateState.rainIntensity * 0.2);
 }
 
+function sampleWaterAudioMetrics(
+  state: WorldState,
+  cameraWorldX: number,
+  cameraWorldZ: number
+): { proximity: number; flow: number; depth: number } {
+  const half = (state.size - 1) * 0.5;
+  const centerX = Math.round(cameraWorldX + half);
+  const centerY = Math.round(cameraWorldZ + half);
+
+  const minX = Math.max(0, centerX - WATER_AUDIO_SEARCH_RADIUS);
+  const maxX = Math.min(state.size - 1, centerX + WATER_AUDIO_SEARCH_RADIUS);
+  const minY = Math.max(0, centerY - WATER_AUDIO_SEARCH_RADIUS);
+  const maxY = Math.min(state.size - 1, centerY + WATER_AUDIO_SEARCH_RADIUS);
+
+  let strongestProximity = 0;
+  let weightedFlow = 0;
+  let weightedDepth = 0;
+  let weightSum = 0;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    const rowOffset = y * state.size;
+    const dy = y - centerY;
+    for (let x = minX; x <= maxX; x += 1) {
+      const index = rowOffset + x;
+      const depth = state.water[index] ?? 0;
+      if (depth < WATER_AUDIO_MIN_DEPTH) {
+        continue;
+      }
+
+      const dx = x - centerX;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const distanceFactor = saturate(1 - distance / WATER_AUDIO_AUDIBLE_DISTANCE);
+      if (distanceFactor <= 0) {
+        continue;
+      }
+
+      const depthFactor = saturate(depth * 5.2);
+      const total = state.terrain[index] + depth;
+      const rightTotal =
+        x + 1 < state.size ? state.terrain[index + 1] + state.water[index + 1] : total;
+      const leftTotal = x > 0 ? state.terrain[index - 1] + state.water[index - 1] : total;
+      const upTotal =
+        y + 1 < state.size
+          ? state.terrain[index + state.size] + state.water[index + state.size]
+          : total;
+      const downTotal =
+        y > 0 ? state.terrain[index - state.size] + state.water[index - state.size] : total;
+
+      const downhill =
+        Math.max(0, total - rightTotal) +
+        Math.max(0, total - leftTotal) +
+        Math.max(0, total - upTotal) +
+        Math.max(0, total - downTotal);
+      const flowFactor = saturate(downhill / WATER_AUDIO_FLOW_NORMALIZER);
+      const localFlow = saturate(flowFactor * (0.62 + depthFactor * 0.38));
+      const weight = distanceFactor * (0.2 + depthFactor * 0.8);
+
+      strongestProximity = Math.max(strongestProximity, distanceFactor * depthFactor);
+      weightedFlow += localFlow * weight;
+      weightedDepth += depthFactor * weight;
+      weightSum += weight;
+    }
+  }
+
+  if (weightSum <= 0) {
+    return {
+      proximity: 0,
+      flow: 0,
+      depth: 0
+    };
+  }
+
+  return {
+    proximity: saturate(strongestProximity),
+    flow: saturate(weightedFlow / weightSum),
+    depth: saturate(weightedDepth / weightSum)
+  };
+}
+
+async function ensureAudioStarted(): Promise<boolean> {
+  if (!audioEnabled) {
+    return false;
+  }
+  return ambientAudio.ensureStarted();
+}
+
 function setDebugMode(enabled: boolean): void {
   debugMode = enabled;
   hud.setDebugMode(enabled);
@@ -599,7 +697,8 @@ function updateDebugReadout(): void {
     `vegetation suit canopy=${vegetationCell.canopySuitability.toFixed(3)} shrub=${vegetationCell.shrubSuitability.toFixed(3)} grass=${vegetationCell.grassSuitability.toFixed(3)} density=${vegetationCell.densityNoise.toFixed(3)}/${vegetationCell.densityLimit.toFixed(3)}`,
     `clock mode=${cycleLabel} active=${formatClockHour(activeHour)} sim=${formatClockHour(simulatedHour)} phase=${climateState.dayPhase.toFixed(3)}`,
     `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)} daylight=${climateState.daylight.toFixed(2)}`,
-    `wind mode=${windLabel} strength=${climateState.windStrength.toFixed(2)} dir=${toDegrees(climateState.windDirection).toFixed(0)}deg gust=${climateState.windGustiness.toFixed(2)}`
+    `wind mode=${windLabel} strength=${climateState.windStrength.toFixed(2)} dir=${toDegrees(climateState.windDirection).toFixed(0)}deg gust=${climateState.windGustiness.toFixed(2)}`,
+    `audio enabled=${audioEnabled ? 'yes' : 'no'} ready=${ambientAudio.isStarted() ? 'yes' : 'no'} waterNear=${waterAudioProximity.toFixed(2)} waterFlow=${waterAudioFlow.toFixed(2)} waterDepth=${waterAudioDepth.toFixed(2)}`
   ];
 
   const text = lines.join('\n');
@@ -644,11 +743,32 @@ scene.setPhotoMode(photoMode);
 scene.updateRiverGuide(world.terrain);
 scene.setRiverGuideVisible(riverGuideVisible);
 
+function setAudioEnabled(enabled: boolean, announce = true): void {
+  audioEnabled = enabled;
+  ambientAudio.setEnabled(enabled);
+  hud.setAudioEnabled(enabled);
+
+  if (!enabled) {
+    if (announce) {
+      hud.setStatus('Audio: OFF');
+    }
+    return;
+  }
+
+  void ensureAudioStarted().then((started) => {
+    if (!announce) {
+      return;
+    }
+    hud.setStatus(started ? 'Audio: ON' : 'Audio: waiting for interaction');
+  });
+}
+
 const hud = new Hud(
   document.body,
   {
     tool: toolMode,
     interactionMode,
+    audioEnabled,
     debugMode,
     dayCycleMode,
     manualHour: manualDayHour,
@@ -675,6 +795,9 @@ const hud = new Hud(
     onInteractionModeChange: (mode) => {
       interactionMode = mode;
       hud.setStatus(mode === 'camera' ? 'Camera mode' : `Edit mode: ${toolMode}`);
+    },
+    onAudioToggle: (enabled) => {
+      setAudioEnabled(enabled);
     },
     onDebugModeChange: (enabled) => {
       setDebugMode(enabled);
@@ -821,6 +944,13 @@ const hud = new Hud(
   }
 );
 
+setAudioEnabled(audioEnabled, false);
+const onAudioUnlockGesture = () => {
+  void ensureAudioStarted();
+};
+window.addEventListener('pointerdown', onAudioUnlockGesture, { passive: true });
+window.addEventListener('keydown', onAudioUnlockGesture);
+
 const photoOverlay = document.createElement('div');
 photoOverlay.className = 'photo-overlay';
 photoOverlay.dataset.testid = 'photo-overlay';
@@ -947,6 +1077,9 @@ const input = new InputController({
     setDebugMode(next);
     hud.setStatus(buildDebugStatusMessage(next));
   },
+  onAudioToggleKey: () => {
+    setAudioEnabled(!audioEnabled);
+  },
   onPhotoModeToggleKey: () => {
     setPhotoModeEnabled(!photoMode);
   },
@@ -1041,6 +1174,30 @@ function animate(frameTime: number): void {
     getWeatherOverride(),
     getWindOverride()
   );
+  waterAudioSampleTimer -= deltaSeconds;
+  if (waterAudioSampleTimer <= 0) {
+    const waterAudioMetrics = sampleWaterAudioMetrics(
+      world,
+      scene.camera.position.x,
+      scene.camera.position.z
+    );
+    waterAudioProximity = waterAudioMetrics.proximity;
+    waterAudioFlow = waterAudioMetrics.flow;
+    waterAudioDepth = waterAudioMetrics.depth;
+    waterAudioSampleTimer = WATER_AUDIO_SAMPLE_INTERVAL;
+  }
+  ambientAudio.update(
+    {
+      daylight: climateState.daylight,
+      rainIntensity: climateState.rainIntensity,
+      windStrength: climateState.windStrength,
+      windGustiness: climateState.windGustiness,
+      waterProximity: waterAudioProximity,
+      waterFlow: waterAudioFlow,
+      waterDepth: waterAudioDepth
+    },
+    deltaSeconds
+  );
 
   if (terrainDirty) {
     scene.updateTerrain(world.terrain);
@@ -1078,6 +1235,9 @@ requestAnimationFrame(animate);
 
 window.addEventListener('beforeunload', () => {
   delete window.__hakoniwaDebug;
+  window.removeEventListener('pointerdown', onAudioUnlockGesture);
+  window.removeEventListener('keydown', onAudioUnlockGesture);
+  void ambientAudio.dispose();
   input.dispose();
   scene.dispose();
 });

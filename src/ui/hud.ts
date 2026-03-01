@@ -9,6 +9,7 @@ export type WindMode = 'simulation' | 'manual';
 export interface HudState {
   tool: ToolMode;
   interactionMode: InteractionMode;
+  audioEnabled: boolean;
   debugMode: boolean;
   dayCycleMode: DayCycleMode;
   manualHour: number;
@@ -29,6 +30,7 @@ export interface HudState {
 export interface HudCallbacks {
   onToolChange: (tool: ToolMode) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
+  onAudioToggle: (enabled: boolean) => void;
   onDebugModeChange: (enabled: boolean) => void;
   onDayCycleModeChange: (mode: DayCycleMode) => void;
   onManualHourChange: (hour: number) => void;
@@ -85,6 +87,7 @@ export class Hud {
 
   private readonly toolButtons: Record<ToolMode, HTMLButtonElement>;
   private readonly cameraButton: HTMLButtonElement;
+  private readonly audioButton: HTMLButtonElement;
   private readonly debugButton: HTMLButtonElement;
   private readonly seedGroup: HTMLDivElement;
   private readonly dayCycleGroup: HTMLDivElement;
@@ -146,6 +149,16 @@ export class Hud {
       const next = !this.state.debugMode;
       this.setDebugMode(next);
       callbacks.onDebugModeChange(next);
+    });
+
+    this.audioButton = document.createElement('button');
+    this.audioButton.type = 'button';
+    this.audioButton.className = 'audio-toggle';
+    this.audioButton.dataset.testid = 'audio-toggle';
+    this.audioButton.addEventListener('click', () => {
+      const next = !this.state.audioEnabled;
+      this.setAudioEnabled(next);
+      callbacks.onAudioToggle(next);
     });
 
     this.dayCycleGroup = document.createElement('div');
@@ -499,6 +512,7 @@ export class Hud {
     this.status.textContent = 'Ready';
     this.element.appendChild(this.status);
 
+    this.element.appendChild(this.audioButton);
     this.element.appendChild(this.debugButton);
     this.element.appendChild(this.seedGroup);
     this.element.appendChild(this.dayCycleGroup);
@@ -531,9 +545,15 @@ export class Hud {
     this.cameraButton.classList.toggle('active', mode === 'camera');
     this.tip.textContent =
       mode === 'camera'
-        ? 'Camera mode: left drag pan | right drag rotate | wheel zoom | P photo | R river guide | D debug'
-        : 'Edit mode: left drag edit | right drag rotate | 0 camera mode | P photo | R river guide | D debug';
+        ? 'Camera mode: left drag pan | right drag rotate | wheel zoom | P photo | R river guide | M audio | D debug'
+        : 'Edit mode: left drag edit | right drag rotate | 0 camera mode | P photo | R river guide | M audio | D debug';
     this.updateContextualControlVisibility();
+  }
+
+  setAudioEnabled(enabled: boolean): void {
+    this.state.audioEnabled = enabled;
+    this.audioButton.classList.toggle('active', enabled);
+    this.audioButton.textContent = enabled ? 'M Audio: ON' : 'M Audio: OFF';
   }
 
   setDebugMode(enabled: boolean): void {
@@ -674,6 +694,7 @@ export class Hud {
 
   private refresh(): void {
     this.setInteractionMode(this.state.interactionMode);
+    this.setAudioEnabled(this.state.audioEnabled);
     this.setTerrainSeed(this.state.terrainSeed);
     this.setTool(this.state.tool);
     this.setDayCycleMode(this.state.dayCycleMode);

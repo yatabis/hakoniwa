@@ -51,3 +51,16 @@ test('debug readout includes vegetation diagnostics', async ({ page }) => {
   await expect(readout).toContainText('vegetation cell');
   await expect(readout).toContainText('vegetation suit');
 });
+
+test('audio can be toggled from HUD button and keyboard', async ({ page }) => {
+  await page.goto('/');
+
+  const audioToggle = page.getByTestId('audio-toggle');
+  await expect(audioToggle).toHaveText('M Audio: ON');
+
+  await audioToggle.click();
+  await expect(audioToggle).toHaveText('M Audio: OFF');
+
+  await page.keyboard.press('M');
+  await expect(audioToggle).toHaveText('M Audio: ON');
+});

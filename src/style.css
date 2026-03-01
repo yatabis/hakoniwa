@@ -76,6 +76,7 @@ canvas {
   margin-bottom: 10px;
 }
 
+.audio-toggle,
 .debug-toggle {
   width: 100%;
   margin-bottom: 10px;
@@ -180,6 +181,7 @@ canvas {
 .tool-grid button:hover,
 .mode-switch button:hover,
 .seed-actions button:hover,
+.audio-toggle:hover,
 .debug-toggle:hover,
 .slot-grid button:hover {
   transform: translateY(-1px);
@@ -188,6 +190,7 @@ canvas {
 
 .tool-grid button.active,
 .mode-switch button.active,
+.audio-toggle.active,
 .debug-toggle.active {
   background: var(--accent);
   border-color: var(--accent-strong);

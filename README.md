@@ -27,6 +27,9 @@ Implemented:
 - Climate system
   - simulated day-night cycle (24-minute full cycle, starts at 07:00)
   - cloud/rain simulation
+- Procedural ambient audio (no external assets)
+  - wind, rain, and stream layers driven by climate and water state
+  - unlock on first user interaction
 - Photo mode
   - HUD hide for scenic viewing
   - FOV and DOF-style post effect controls
@@ -125,6 +128,7 @@ Optional override:
 - `[` / `]`: Brush radius down/up
 - `P`: Toggle photo mode
 - `R`: Toggle river guide overlay
+- `M`: Toggle ambient audio
 - `D`: Toggle debug mode
 
 Photo mode shortcuts:
@@ -217,6 +221,27 @@ Default parameters:
 - Daylight drives atmosphere and part of vegetation vitality
 - Cloud/rain are procedural signals based on world simulation time and terrain seed
 - Rain adds water each step with altitude-based orographic bias
+
+### Ambient Audio
+
+- Uses Web Audio API with procedural noise/oscillator layers:
+  - wind breeze + gale + rumble layers (crossfaded noise filters)
+  - rain drizzle + heavy rain layers (crossfaded noise filters)
+  - water babble + rapid roar (bandpass noise layers)
+- Audio mix is updated each frame from:
+  - `rainIntensity`
+  - `windStrength` / `windGustiness`
+  - camera-to-water proximity
+  - camera-near water flow speed and depth
+- Wind/rain/water layer gains are 0 when their driving intensity is 0.
+- Rain timbre crossfades with rain intensity:
+  - light rain -> drizzle tone (`shito-shito`)
+  - heavy rain -> stronger hiss/roar (`zaa-zaa`)
+- Water timbre crossfades with flow speed:
+  - low flow -> babble
+  - high flow -> roar
+- Water layer is audible only when camera is near water (not by total world spread).
+- Browser autoplay policy is handled by unlocking audio on first interaction.
 
 ### Humidity + Vegetation
 

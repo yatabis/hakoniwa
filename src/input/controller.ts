@@ -22,6 +22,7 @@ export interface InputControllerOptions {
   onToolKey: (tool: ToolMode) => void;
   onInteractionModeKey: (mode: InteractionMode) => void;
   onDebugModeToggleKey: () => void;
+  onAudioToggleKey: () => void;
   onPhotoModeToggleKey: () => void;
   onRiverGuideToggleKey: () => void;
   onPhotoFovDeltaKey: (delta: number) => void;
@@ -48,6 +49,7 @@ export class InputController {
   private readonly onToolKey: (tool: ToolMode) => void;
   private readonly onInteractionModeKey: (mode: InteractionMode) => void;
   private readonly onDebugModeToggleKey: () => void;
+  private readonly onAudioToggleKey: () => void;
   private readonly onPhotoModeToggleKey: () => void;
   private readonly onRiverGuideToggleKey: () => void;
   private readonly onPhotoFovDeltaKey: (delta: number) => void;
@@ -79,6 +81,7 @@ export class InputController {
     this.onToolKey = options.onToolKey;
     this.onInteractionModeKey = options.onInteractionModeKey;
     this.onDebugModeToggleKey = options.onDebugModeToggleKey;
+    this.onAudioToggleKey = options.onAudioToggleKey;
     this.onPhotoModeToggleKey = options.onPhotoModeToggleKey;
     this.onRiverGuideToggleKey = options.onRiverGuideToggleKey;
     this.onPhotoFovDeltaKey = options.onPhotoFovDeltaKey;
@@ -176,6 +179,12 @@ export class InputController {
 
     if (event.key === 'r' || event.key === 'R') {
       this.onRiverGuideToggleKey();
+      event.preventDefault();
+      return;
+    }
+
+    if (event.key === 'm' || event.key === 'M') {
+      this.onAudioToggleKey();
       event.preventDefault();
       return;
     }
