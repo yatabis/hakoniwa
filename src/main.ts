@@ -71,6 +71,7 @@ interface VegetationCellDiagnostics {
 
 type HakoniwaDebugApi = {
   getWindDiagnostics: () => ReturnType<SceneView['getWindDiagnostics']>;
+  getLifeDiagnostics: () => ReturnType<SceneView['getLifeDiagnostics']>;
 };
 
 declare global {
@@ -682,6 +683,12 @@ function updateDebugReadout(): void {
     diagnostics.y
   );
   const vegetationCounts = scene.getVegetationCounts();
+  const life = scene.getLifeDiagnostics();
+  const birdActivityScale =
+    life.birdsTotal > 0 ? life.birdsActive / Math.max(1, life.birdsTotal) : 0;
+  const insectActivityScale =
+    life.insectsTotal > 0 ? life.insectsActive / Math.max(1, life.insectsTotal) : 0;
+  const combinedActivityScale = (birdActivityScale + insectActivityScale) * 0.5;
 
   const lines = [
     `cell: (${diagnostics.x}, ${diagnostics.y}) idx=${diagnostics.index}`,
@@ -695,6 +702,9 @@ function updateDebugReadout(): void {
     `vegetation draw canopy=${vegetationCounts.canopy} shrub=${vegetationCounts.shrub} grass=${vegetationCounts.grass} total=${vegetationCounts.total} vitality=${vegetationVitality.toFixed(2)}`,
     `vegetation cell ${vegetationCell.status} selected=${vegetationCell.selected} fertility=${vegetationCell.fertility.toFixed(3)} moisture=${vegetationCell.moisture.toFixed(3)} riparian=${vegetationCell.riparian.toFixed(3)} slope=${vegetationCell.slope.toFixed(3)}`,
     `vegetation suit canopy=${vegetationCell.canopySuitability.toFixed(3)} shrub=${vegetationCell.shrubSuitability.toFixed(3)} grass=${vegetationCell.grassSuitability.toFixed(3)} density=${vegetationCell.densityNoise.toFixed(3)}/${vegetationCell.densityLimit.toFixed(3)}`,
+    `life birds total=${life.birdsTotal} active=${life.birdsActive} near=${life.nearCameraBirds}`,
+    `life insects total=${life.insectsTotal} active=${life.insectsActive} near=${life.nearCameraInsects}`,
+    `life habitat waterEdgeCells=${life.spawnableWaterEdgeCells} activityScale=${combinedActivityScale.toFixed(2)}`,
     `clock mode=${cycleLabel} active=${formatClockHour(activeHour)} sim=${formatClockHour(simulatedHour)} phase=${climateState.dayPhase.toFixed(3)}`,
     `weather mode=${weatherLabel} cloud=${climateState.cloudiness.toFixed(2)} rain=${climateState.rainIntensity.toFixed(2)} daylight=${climateState.daylight.toFixed(2)}`,
     `wind mode=${windLabel} strength=${climateState.windStrength.toFixed(2)} dir=${toDegrees(climateState.windDirection).toFixed(0)}deg gust=${climateState.windGustiness.toFixed(2)}`,
@@ -725,7 +735,8 @@ seedHumidityFromWorld(humidityMap, world);
 
 const scene = new SceneView(app, world.size);
 window.__hakoniwaDebug = {
-  getWindDiagnostics: () => scene.getWindDiagnostics()
+  getWindDiagnostics: () => scene.getWindDiagnostics(),
+  getLifeDiagnostics: () => scene.getLifeDiagnostics()
 };
 scene.updateAtmosphere(climateState);
 scene.updateTerrain(world.terrain);
@@ -1211,6 +1222,16 @@ function animate(frameTime: number): void {
   }
 
   scene.updateAtmosphere(climateState);
+  scene.updateLife({
+    daylight: climateState.daylight,
+    rainIntensity: climateState.rainIntensity,
+    windStrength: climateState.windStrength,
+    windDirection: climateState.windDirection,
+    windGustiness: climateState.windGustiness,
+    time: world.time,
+    cameraX: scene.camera.position.x,
+    cameraZ: scene.camera.position.z
+  });
   updateDebugReadout();
 
   const now = performance.now();

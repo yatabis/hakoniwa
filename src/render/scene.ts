@@ -5,6 +5,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { toIndex } from '../core/grid';
+import type { LifeDiagnostics, LifeUpdateState } from '../core/types';
+import { LifeSystem } from './life';
 
 const MAX_CANOPY_TREES = 6_800;
 const MAX_SHRUBS = 9_600;
@@ -468,6 +470,7 @@ export class SceneView {
   private atmosphereWindDirection: number;
   private atmosphereWindGustiness: number;
   private readonly windDirectionVector: THREE.Vector2;
+  private readonly lifeSystem: LifeSystem;
   private previousFrameTime: number;
   private readonly onResizeBound: () => void;
 
@@ -498,6 +501,7 @@ export class SceneView {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#b9b6a6');
     this.scene.fog = new THREE.Fog('#c4cbc0', 120, 340);
+    this.lifeSystem = new LifeSystem(size, 1, this.scene);
 
     this.camera = new THREE.PerspectiveCamera(
       52,
@@ -807,6 +811,10 @@ export class SceneView {
     };
   }
 
+  getLifeDiagnostics(): LifeDiagnostics {
+    return this.lifeSystem.getDiagnostics();
+  }
+
   setPhotoMode(enabled: boolean): void {
     this.bokehPass.enabled = enabled;
   }
@@ -834,6 +842,10 @@ export class SceneView {
 
   setRiverGuideVisible(visible: boolean): void {
     this.riverGuideMesh.visible = visible;
+  }
+
+  updateLife(state: LifeUpdateState): void {
+    this.lifeSystem.update(state);
   }
 
   updateRiverGuide(terrain: Float32Array): void {
@@ -1358,6 +1370,7 @@ export class SceneView {
     if (this.grassMesh.instanceColor) {
       this.grassMesh.instanceColor.needsUpdate = true;
     }
+    this.lifeSystem.rebuildHabitat(terrain, water, humidity, seed);
   }
 
   updateAtmosphere(state: {
@@ -1565,6 +1578,7 @@ export class SceneView {
       material.dispose();
     }
 
+    this.lifeSystem.dispose();
     this.renderer.dispose();
     this.composer.dispose();
   }

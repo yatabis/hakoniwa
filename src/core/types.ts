@@ -33,3 +33,24 @@ export interface SimParams {
   seepage?: number;
   edgeDrain?: number;
 }
+
+export interface LifeUpdateState {
+  daylight: number;
+  rainIntensity: number;
+  windStrength: number;
+  windDirection: number;
+  windGustiness: number;
+  time: number;
+  cameraX: number;
+  cameraZ: number;
+}
+
+export interface LifeDiagnostics {
+  birdsTotal: number;
+  birdsActive: number;
+  insectsTotal: number;
+  insectsActive: number;
+  nearCameraBirds: number;
+  nearCameraInsects: number;
+  spawnableWaterEdgeCells: number;
+}
